@@ -4,9 +4,9 @@ Already-paid entries remain transaction review, not a second forecast expense.
 The mixed actual/future command is added only with the ledger reconciliation.
 """
 def shortcut(st,state,key,page):
-    if state.get('_quick_expense') and state['_quick_expense']['page']==page:
+    if state.get('_quick_expense') and state['_quick_expense']['page']==page and not state['_quick_expense'].get('suspended'):
         return True
-    if st.button('+ Add Expense',type='primary',key=key+':quick_add'):
+    if st.button('Resume expense' if state.get('_quick_expense') else '+ Add Expense',type='primary',key=key+':quick_add'):
         state['_quick_expense']={'page':page};st.rerun()
     return False
 

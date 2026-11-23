@@ -11,7 +11,7 @@ from setup_model import setup_state,approve_setup,requirements
 from category_catalog import sync
 from accountability import simulate_period
 
-VERSION='nestworth-uat-48-8e479d4'
+VERSION='nestworth-uat-48-round1'
 SCENARIO_DATE=date(2026,11,19)
 
 

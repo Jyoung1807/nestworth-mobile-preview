@@ -9,11 +9,12 @@ def buffer(state,scope,step):
 
 def field(st,state,scope,setup_step,kind,label,name,default,**kwargs):
     draft=buffer(state,scope,setup_step);draft.setdefault(name,default)
-    key=state['_nav_key']+':input:'+scope+':'+draft['_epoch']+':'+name
+    epoch=draft['_epoch']
+    key=state['_nav_key']+':input:'+scope+':'+epoch+':'+name
     def changed():
         with household_model_lock(state['_nav_key']):
             current=state.get('setup_buffers',{}).get(scope)
-            if current is not None and current.get('_epoch')==draft['_epoch']:current[name]=st.session_state[key];current['_dirty']=True
+            if current is not None and current.get('_epoch')==epoch:current[name]=st.session_state[key];current['_dirty']=True
     value=draft[name]
     if kind=='date_input':kwargs.setdefault('format','DD/MM/YYYY')
     if kind in ('selectbox','radio'):
@@ -34,7 +35,11 @@ def saved(st,state,scope):
 
 
 def applied(state,scope):
-    state['setup_buffers'][scope]['_dirty']=False;state['setup_buffers'][scope]['_applied']=True
+    draft=state['setup_buffers'][scope]
+    draft['_dirty']=False;draft['_applied']=True
+    # A completed form must not accept a delayed event from its old widgets.
+    # Values remain available for Edit/Resume under a fresh widget generation.
+    draft['_epoch']=uuid4().hex
 
 
 def discard(st,state,scope,label='Discard input draft'):

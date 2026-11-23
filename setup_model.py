@@ -5,7 +5,7 @@ from finance import money
 from planning import suggestions,project_payments
 
 STEPS=('Your Household','Build Your Regular Budget','Your Plans','Review Historical Spending','Contingency & Savings','Compare & Approve')
-ROUTES=('Home','Setup','Spending','Outlook','Actions','Settings')
+ROUTES=('Home','BudgetSpending','Payments','Spending','Outlook','Actions','Setup','Settings','More')
 LEGACY={'Dashboard':('Home',None),'Review Your Spending':('Spending',None),'Actions Centre':('Actions',None),'Your Year Ahead':('Outlook',None),'Your Household':('Setup',STEPS[0]),'Build Your Budget':('Setup',STEPS[1]),'Compare & Finalise':('Setup',STEPS[5])}
 
 

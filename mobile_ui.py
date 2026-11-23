@@ -1,6 +1,6 @@
 """Responsive presentation shared by every financial screen."""
 def mobile_styles(st):
-    st.markdown('''<style>
+    st.html('''<style>
     .stMainBlockContainer{max-width:1180px;}
     .category-strip{margin-top:20px;margin-bottom:8px;}
     .category-line{display:flex;justify-content:space-between;gap:8px;font-size:16px;font-weight:600;flex-wrap:wrap;}
@@ -59,7 +59,7 @@ def mobile_styles(st):
       [class*="st-key-expense_header_"] [data-testid="stColumn"]{min-width:0!important;flex:1 1 0%!important;}
       [class*="st-key-expense_header_"] [data-testid="stColumn"]:last-child{flex:0 0 44px!important;}
     }
-    </style>''',unsafe_allow_html=True)
+    </style>''')
 
 
 def financial_rows(st,rows,key):

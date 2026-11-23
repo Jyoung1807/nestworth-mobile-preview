@@ -151,6 +151,9 @@ def recovery_editor(st,state,key,source,when,boundary):
 
 
 def revision_editor(st,state,key):
+    # Resolve the current financial contract instead of a stale module-level
+    # function retained by an interrupted hot reload. Never fall back to annual.
+    from planning import summarize
     # Store server-synchronised forecast draft inputs outside widget lifecycle cleanup.
     drafts=state.setdefault('revision_ui_drafts',{})
     for widget_key,value in drafts.get(key,{}).items():
@@ -179,7 +182,7 @@ def revision_editor(st,state,key):
         save_revision(candidate,revision)
         after=summarize(result(candidate)[0],start,end=period_end(state))
         change=before['savings']-after['savings']
-        st.write(('Annual spending change: **'+dollars(after['expenses']-before['expenses'])+'** · savings impact: **'+dollars(-change)+'**').replace('$',r'\$'))
+        st.write(('Spending change: **'+dollars(after['expenses']-before['expenses'])+'** · savings impact: **'+dollars(-change)+'**').replace('$',r'\$'))
         st.caption('Earlier dated events, historical transactions and approved versions remain unchanged. No category is silently reduced.')
         offset_choice=st.radio('Offset this revision',['No offset','Full offset','Partial offset'],horizontal=True,key=key+':offset')
         if change>0 and offset_choice!='No offset':

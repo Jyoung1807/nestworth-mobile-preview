@@ -35,7 +35,7 @@ def category_chart(st,rows,key,selected=None):
         x=alt.X('amount:Q',title=None,stack='zero',axis=alt.Axis(format='$~s',tickCount=4)),yOffset=alt.YOffset('series:N',sort=['Budget','Recorded']),
         color=alt.Color('part:N',scale=alt.Scale(domain=['Budget','Recorded','Overspend','Needs review'],range=['#789A85',FOREST,NEGATIVE,GOLD]),legend=alt.Legend(orient='bottom',title=None,columns=2),title=None),
         order=alt.Order('part:N',sort='descending'),
-        tooltip=['category:N','series:N','part:N',alt.Tooltip('amount:Q',title='This segment',format='$,.2f'),alt.Tooltip('total:Q',title='Total',format='$,.2f')]).add_params(pick).properties(height=max(230,len(rows)*56+90))
+        tooltip=['category:N','series:N','part:N',alt.Tooltip('amount:Q',title='This segment',format='$,.2f'),alt.Tooltip('total:Q',title='Total',format='$,.2f')]).add_params(pick).properties(height=max(260,len(rows)*48+70))
     event=st.altair_chart(chart_style(chart),width='stretch',key=key,on_select='rerun',selection_mode='category_pick')
     selection=event.selection.get('category_pick',[]) if event and hasattr(event,'selection') else []
     return selection[0].get('category') if selection else None
@@ -46,14 +46,19 @@ def period_selection(st,state,key):
     from household_calendar import weeks_in_horizon,week_start
     start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     today=date.fromisoformat(state.get('tracking_date',str(start)))
+    saved=state.setdefault('spending_filters',{})
+    if key+':period' not in st.session_state and saved.get('period'):st.session_state[key+':period']=saved['period']
     period=st.radio('Analysis period',['Week','Month','Budget period' if state['draft'].get('end_exclusive') else 'Year'],horizontal=True,key=key+':period')
+    saved['period']=period
     if period!='Year':state['dashboard_view']='Monthly' if period=='Month' else 'Weekly'
     if period in ('Year','Budget period'):return start,end
     if period=='Week':
-        selected=week_selector(st,'Analysis week',weeks_in_horizon(start,end),key+':week',week_start(today))
+        selected=week_selector(st,'Analysis week',weeks_in_horizon(start,end),key+':week',date.fromisoformat(saved['week']) if saved.get('week') else week_start(today));saved['week']=str(selected)
         return max(start,selected),min(end,selected+timedelta(days=7))
     months=month_starts(state)
+    if key+':month' not in st.session_state and saved.get('month') and date.fromisoformat(saved['month']) in months:st.session_state[key+':month']=date.fromisoformat(saved['month'])
     selected=st.selectbox('Analysis month',months,index=months.index(today.replace(day=1)) if today.replace(day=1) in months else 0,format_func=lambda d:d.strftime('%B %Y'),key=key+':month')
+    saved['month']=str(selected)
     n=months.index(selected)
     def move(offset):st.session_state[key+':month']=months[n+offset]
     a,b=st.columns(2);a.button('Previous month',key=key+':previous',disabled=n==0,on_click=move,args=(-1,));b.button('Next month',key=key+':next',disabled=n==len(months)-1,on_click=move,args=(1,))
@@ -65,7 +70,8 @@ def spending_analysis(st,state,key,events=None):
     if focus:state.pop('_category_detail',None)
     detail=state.get('_category_detail')
     if detail:
-        if st.button('Back to Spending Analysis',key=key+':detail_back'):
+        if st.button('Back to Overview' if detail.get('parent')=='Overview' else 'Back to Spending',key=key+':detail_back'):
+            if detail.get('parent')=='Overview':state['_home_screen']='Overview';state['_mix_epoch']=state.get('_mix_epoch',0)+1
             state.pop('_category_detail',None)
             state.pop(key+':chart_click:'+detail['left']+':'+detail['right'],None)
             state['_analysis_chart_epoch']=state.get('_analysis_chart_epoch',0)+1
@@ -78,6 +84,21 @@ def spending_analysis(st,state,key,events=None):
         st.session_state[key+':period']='Week';st.session_state[key+':week']=focus['week']
     left,right=period_selection(st,state,key)
     data=category_view(state,left,right);context=f'{left}:{right}';selection_key=key+':category:'+context
+    budget=sum((r['budget'] for r in data['rows']),money(0));actual=sum((money(t['amount']) for t in data['transactions']),money(0)) if data['covered'] or data['transactions'] else None
+    with st.container(key='nw_hero_week'):
+        a,b,c=st.columns(3);a.metric('Spending budget',dollars(budget));b.metric('Actual spending',dollars(actual));c.metric('Remaining / overspend',dollars(budget-actual if data['covered'] and actual is not None else None))
+    from proactive_alerts import period_for
+    from action_finance import collect_actions
+    for issue in collect_actions(state):
+        first,last=period_for(state,issue)
+        if issue['type']=='overspend' and issue['status']=='Needs decision' and first and first<right and last>left:
+            a,b=st.columns([3,1]);a.warning(issue['category']+' · '+dollars(issue['remaining'])+' over')
+            if b.button('Review & Fix '+issue['category'],key=key+':fix:'+issue['id']):
+                from actions_ui import open_source
+                open_source(st,state,issue['source'],review_first=True)
+    if st.button('Resume expense' if state.get('_quick_expense') else '+ Add Expense',key=key+':add_expense'):
+        state['_quick_expense']={'page':state['_last_route']};st.rerun()
+    if state.pop('_spending_landing',False):st.session_state[selection_key]=None
     selected=st.session_state.get(selection_key)
     if focus and focus.get('category'):st.session_state[selection_key]=focus['category'];selected=focus['category']
     clicked=category_chart(st,data['rows'],key+':chart:'+context+':'+str(state.get('_analysis_chart_epoch',0)),selected)
@@ -96,7 +117,8 @@ def spending_analysis(st,state,key,events=None):
 
 def category_details(st,state,key,left,right,selected):
     data=category_view(state,left,right);context=f'{left}:{right}'
-    row=next(r for r in data['rows'] if r['category']==selected)
+    row=next((r for r in data['rows'] if r['category']==selected),None)
+    if row is None:st.info('There are no remaining records in this category for this period.');return
     st.subheader(selected)
     from action_finance import collect_actions
     from proactive_alerts import period_for
@@ -118,6 +140,20 @@ def category_details(st,state,key,left,right,selected):
             identity=(e.get('item_id'),e['name'],bool(e.get('allowance')));components[identity]=components.get(identity,money(0))+e['amount']
     with st.expander('What makes up this budget',expanded=True):
         for (_,name,allowance),amount in components.items():line(st,name,dollars(amount),'Flexible allowance' if allowance else 'Scheduled commitment')
+    trend_key=key+':trend:'+context+':'+selected
+    if st.button('Hide trend' if state.get(trend_key) else 'View trend',key=trend_key+':toggle'):
+        state[trend_key]=not state.get(trend_key);st.rerun()
+    if state.get(trend_key):
+        days=sorted({e['date'] for e in data['budget'] if e['category']==selected}|{date.fromisoformat(t['date']) for t in data['transactions'] if (t.get('category') or 'Uncategorised')==selected})
+        budget_running=money(0);actual_running=money(0);records=[];today=date.fromisoformat(state['tracking_date'])
+        for day in days:
+            budget_running+=sum((e['amount'] for e in data['budget'] if e['category']==selected and e['date']==day),money(0))
+            observed=[t for t in data['transactions'] if (t.get('category') or 'Uncategorised')==selected and date.fromisoformat(t['date'])==day]
+            actual_running+=sum((money(t['amount']) for t in observed),money(0));records.append(dict(day=str(day),series='Budget',amount=float(budget_running)))
+            if day<=today and (data['covered'] or observed):records.append(dict(day=str(day),series='Recorded',amount=float(actual_running)))
+        if records:
+            chart=alt.Chart(pd.DataFrame(records)).mark_line(point=True).encode(x=alt.X('day:T',title=None,axis=alt.Axis(format='%d %b',tickCount=4)),y=alt.Y('amount:Q',title=None,axis=alt.Axis(format='$~s')),color=alt.Color('series:N',scale=alt.Scale(domain=['Budget','Recorded'],range=['#789A85',FOREST]),legend=alt.Legend(orient='bottom',title=None)),tooltip=[alt.Tooltip('day:T',format='%d %b %Y'),'series:N',alt.Tooltip('amount:Q',format='$,.2f')]).properties(height=180)
+            st.altair_chart(chart_style(chart),width='stretch');st.caption('Cumulative within this period · '+('covered transactions to date' if data['covered'] else 'partial records only'))
     matching=[t for t in data['transactions'] if (t.get('category') or 'Uncategorised')==selected]
     transaction_key=key+':transactions:'+context
     if matching or transaction_key+':undo' in state:
@@ -172,156 +208,150 @@ def cash_position(st,state,key,data):
 
 def upcoming(st,state,key,data):
     today=date.fromisoformat(state.get('tracking_date',str(data['start'])))
-    window=st.radio('Upcoming window',['Next 7 days','Next 30 days'],horizontal=True,key=key+':window');right=min(data['end'],today+timedelta(days=7 if window=='Next 7 days' else 30))
+    window=st.radio('Upcoming window',['Next 7 days','Next 30 days'],index=1 if state.get('_payment_window')=='Next 30 days' else 0,horizontal=True,key=key+':window');state['_payment_window']=window;right=min(data['end'],today+timedelta(days=7 if window=='Next 7 days' else 30))
     rows=sorted([e for e in data['events'] if e['kind']=='expense' and not e.get('allowance') and not e['paid'] and today<=e['date']<right],key=lambda e:(e['date'],e['name']))
     st.metric('Upcoming scheduled total',dollars(sum((e['amount'] for e in rows),money(0))))
     st.caption(today.strftime('%d %b')+' – '+(right-timedelta(days=1)).strftime('%d %b %Y')+' · includes scenario date · '+str(len(rows))+' scheduled commitments · recorded payments excluded')
     if not rows:empty(st,'Nothing scheduled in this window','Flexible spending allowances are separate from bills and scheduled payments.')
-    for e in rows[:6]:line(st,e['name'],dollars(e['amount']),e['date'].strftime('%a %d %b')+' · '+e['category']+(' · estimated' if e.get('estimated') else ''))
+    focused=state.get('_payment_detail')
+    if focused:
+        event=next((e for e in data['events'] if e['id']==focused),None)
+        if st.button('Back to payments',key=key+':payment_back'):state.pop('_payment_detail',None);st.rerun()
+        if event:
+            st.subheader(event['name']);line(st,event['date'].strftime('%a %d %b'),dollars(event['amount']),event['category'])
+            from payment_rescheduling_ui import render as reschedule_payments
+            reschedule_payments(st,state,key+':reschedule',data['events'],selected_id=focused)
+        else:st.info('This payment is outside the current window. Return to the schedule.')
+        return
+    def payment_button(e):
+        if st.button(e['date'].strftime('%a %d %b')+' · '+e['name']+' · '+dollars(e['amount']),key=key+':payment:'+e['id'],width='stretch'):
+            state['_payment_detail']=e['id'];st.rerun()
+    for e in rows[:6]:payment_button(e)
     if len(rows)>6:
         with st.expander('All scheduled payments'):
-            for e in rows[6:]:line(st,e['name'],dollars(e['amount']),str(e['date']))
-    from payment_rescheduling_ui import render as reschedule_payments
-    reschedule_payments(st,state,key+':reschedule',data['events'])
+            for e in rows[6:]:payment_button(e)
+    if state.get('payment_reschedules'):
+        with st.expander('Changed payment dates'):
+            for command in state['payment_reschedules']:
+                move=command['moves'][0]
+                if st.button(command['name']+' · '+move['old_date']+' → '+move['new_date'],key=key+':changed:'+command['id']):
+                    state['_payment_detail']=move['event_id'];st.rerun()
     allowances=sum((e['amount'] for e in data['events'] if e['kind']=='expense' and e.get('allowance') and today<=e['date']<right),money(0))
     st.caption('Flexible allowances: '+dollars(allowances)+' · forecast spending capacity, not bills due or recorded transactions')
 
 
 def render_home(st,state,key):
-    st.subheader('Home')
+    from consumer_navigation import open_detail,go,detail_request
     if not state['versions']:
-        intro(st,'Your household. Your future.','A clearer picture starts here.')
-        empty(st,'Let’s build your household budget','Income, everyday spending and future plans — one guided step at a time.')
-        if st.button('Start or resume budget setup',type='primary',key=key+':setup'):navigate(st,state,'Setup')
-        with st.expander('Preview your draft'):
-            data=annual_view(state);st.metric('Annual net income',dollars(data['summary']['income']));st.metric('Projected spending',dollars(data['summary']['expenses']))
+        st.subheader('Your household. Your future.')
+        if st.button('Start or resume budget setup',type='primary',key=key+':setup'):go(st,state,'Setup')
         return
-    data=annual_view(state)
     requested=state.pop('home_view_next',None)
-    if requested in VIEWS:st.session_state[key+':home_view']=requested
-    view=st.radio('Home view',VIEWS,key=key+':home_view',horizontal=True)
-    if view=='Overview':
-        from alert_ui import render as render_financial_alerts
-        render_financial_alerts(st,state,key+':alerts')
-        intro(st,data['start'].strftime('%d %b %Y')+' — '+(data['end']-timedelta(days=1)).strftime('%d %b %Y'),'Your household, at a glance.')
-        compare=st.toggle('Compare to Budget',value=True,key=key+':compare')
-        baseline=data['budget'];forecast=data['summary'];approved=data['approved']
-        known_baseline=approved['plan']['opening_cash']>0 or approved.get('opening_cash_known',False)
-        baseline_cash=aggregate(approved['events'],data['start'],'Monthly',approved['plan']['opening_cash'],end=period_end(approved['plan']))[-1]['closing_cash'] if known_baseline else None
-        from savings_projection import project
-        savings=project(state['draft'],forecast,data['closing']);budget_savings=project(approved['plan'],baseline,baseline_cash)
-        def figure(column,label,budget,current,expense=False,neutral=False):
-            primary=budget if compare else current
-            delta=None;color='off'
-            if compare:
-                difference=None if budget is None or current is None else current-budget
-                if difference is not None and difference!=0 and not neutral:
-                    favourable=difference<0 if expense else difference>0
-                    color='normal' if favourable else 'inverse'
-                delta='Forecast '+dollars(current)+(' · no change' if difference==0 else ' · '+('+' if difference>0 else '−')+dollars(abs(difference)) if difference is not None else ' · baseline unknown')
-            tone='favourable' if color=='normal' else 'unfavourable' if color=='inverse' else 'neutral'
-            with column.container(key='nw_comparison_'+label.replace(' ','_')+'_'+tone):
-                st.metric(label,dollars(primary),delta=delta,delta_color=color,border=False)
-        with st.container(key='nw_hero_annual'):
-            a,b,c,d=st.columns(4)
-            figure(a,'Budget-period net income' if state['draft'].get('end_exclusive') else 'Annual net income',baseline['income'],forecast['income'])
-            figure(b,('Period spending budget' if state['draft'].get('end_exclusive') else 'Annual spending budget') if compare else 'Forecast spending',baseline['expenses'],forecast['expenses'],True)
-            figure(c,'Projected total savings',budget_savings['total'],savings['total'])
-            with c:
-                primary_savings=budget_savings if compare else savings
-                st.caption(('+' if primary_savings['additional']>=0 else '−')+dollars(abs(primary_savings['additional']))+' this budget period')
-                if primary_savings['opening'] is None:st.caption('Identify opening savings to project a total. Opening cash is separate.')
-            figure(d,'Closing cash',baseline_cash,data['closing'])
-        if state['draft'].get('contingency_policy') or state.get('reserve_changes'):
-            with st.container(key='nw_hero_reserve_summary'):
-                left,right=st.columns(2)
-                figure(left,'Contingency reserved',budget_savings['reserve'],savings['reserve'],neutral=True)
-                figure(right,'Unallocated projected savings',budget_savings['unallocated'],savings['unallocated'])
-            if savings['reserve']>savings['additional']:st.warning('Contingency earmarking exceeds additional period savings. A reserve target is not proof of available cash.')
-        st.caption('Approved budget is primary' if compare else 'Latest forecast · approved budget preserved')
-        if savings['target']:
-            target=savings['target'];labels={'additional_savings':'Additional savings','total_savings':'Total savings','closing_cash':'Closing cash'}
-            with st.container(border=True):
-                st.markdown('**'+labels[target['kind']]+' target · '+dollars(target['amount'])+'**')
-                if target['projected'] is None:st.caption('Projected outcome unknown: identify the relevant opening balance.')
-                else:
-                    st.metric('Projected period-end outcome',dollars(target['projected']),delta=dollars(abs(target['variance']))+(' surplus' if target['variance']>=0 else ' shortfall'),delta_color='normal' if target['variance']>=0 else 'inverse')
-                    if target['amount']>0:st.progress(float(max(0,min(1,target['projected']/target['amount']))))
-                st.caption('Projection, not realised or verified savings. Contingency is earmarked separately.')
-        with st.popover('Budget & forecast details',key=key+':annual_details'):
-            from planning import approved_savings
-            from contingency_ledger import reserve_balance
-            from action_finance import collect_actions,recovery_totals
-            line(st,'Projected total savings',dollars(savings['total']))
-            line(st,'Opening savings',dollars(savings['opening']))
-            line(st,'Additional savings this period',dollars(savings['additional']))
-            line(st,'Unallocated total after reserve',dollars(savings['unallocated']))
-            line(st,'Approved unallocated savings',dollars(approved_savings(state)))
-            line(st,'Forecast unallocated period savings',dollars(data['summary']['savings']))
-            line(st,'Change from approval',dollars(data['summary']['savings']-approved_savings(state)))
-            reserve=reserve_balance(state)
-            for label,field in [('Reserve accrued','accumulated'),('Reserve committed','committed'),('Reserve available now','available')]:line(st,label,dollars(reserve[field]))
-            if reserve.get('unfunded_accrual'):line(st,'Accrued target not currently funded',dollars(reserve['unfunded_accrual']))
-            recovery=recovery_totals(collect_actions(state));line(st,'Pending recovery',dollars(recovery['pending']));line(st,'Verified recovery',dollars(recovery['verified']))
-            st.caption('Pending recovery is a forecast commitment, not realised savings.')
-            if data['approved'].get('stretch_goal') is not None:line(st,'Separate stretch goal',dollars(data['approved']['stretch_goal']))
-        from household_calendar import week_start,week_label
-        today=date.fromisoformat(state.get('tracking_date',str(data['start'])))
-        from calendar_ui import week_selector
-        from household_calendar import weeks_in_horizon
-        st.subheader('This week')
-        week=week_selector(st,'Overview week',weeks_in_horizon(data['start'],data['end']),key+':week',week_start(today))
-        context=category_view(state,max(data['start'],week),min(data['end'],week+timedelta(days=7)))
-        budget=sum((r['budget'] for r in context['rows']),money(0));recorded=sum((money(t['amount']) for t in context['transactions']),money(0)) if context['covered'] or context['transactions'] else None
-        remaining=budget-recorded if context['covered'] else None
-        with st.container(key='nw_hero_week'):
-            a,b,c=st.columns(3);a.metric('Weekly spending budget',dollars(budget));b.metric('Actual spending to date',dollars(recorded));c.metric('Remaining / overspend',dollars(remaining))
-        if recorded is not None:st.progress(min(1.0,max(0.0,float(recorded/budget))) if budget else (1.0 if recorded>0 else 0.0))
-        else:st.caption('No transaction coverage yet · actual spending and remaining budget are unknown')
-        if remaining is not None and remaining<0:st.warning('This week is '+dollars(-remaining)+' over budget. Review To Do for recovery choices.')
-        clicked=category_chart(st,context['rows'],key+':week-chart')
-        if clicked and state.get('overview_click')!=(str(week),clicked):
-            state['overview_click']=(str(week),clicked);state['analysis_focus']=dict(week=week,category=clicked);state['home_view_next']='Spending Analysis';st.rerun()
-        a,b,c=st.columns(3)
-        if a.button("View this week's spending",key=key+':explore'):state.pop('_category_detail',None);state['analysis_focus']=dict(week=week,category=None);state['home_view_next']='Spending Analysis';st.rerun()
-        if b.button('Review transactions',key=key+':transactions'):navigate(st,state,'Spending')
-        from notifications import decision_count
-        from action_finance import collect_actions
-        count=decision_count(collect_actions(state))
-        if c.button('To Do'+(' · '+str(count) if count else ''),key=key+':todo'):navigate(st,state,'Actions')
-        st.subheader('Where your money goes')
+    if requested:state['_home_screen']='Spending' if requested=='Spending Analysis' else requested
+    screen=state.get('_home_screen','Overview')
+    if screen=='Spending':
+        st.subheader('Spending');spending_analysis(st,state,key+':analysis');return
+    data=annual_view(state)
+    if screen=='Upcoming Payments':
+        st.subheader('Upcoming Payments');upcoming(st,state,key+':upcoming',data);return
+    if screen!='Overview':
+        st.button('Back to Overview',key=key+':back_overview',on_click=detail_request,args=(state,'Overview'))
+        st.subheader(screen)
+        if screen=='Cash Flow':cash_flow(st,state,key+':cash',data)
+        elif screen=='Cash Position':cash_position(st,state,key+':position',data)
+        else:savings_details(st,state,key,data)
+        return
+    st.subheader('Overview')
+    from proactive_alerts import alerts
+    conditions=alerts(state)
+    urgent=next((a for a in conditions if a['type']=='overspend' or a.get('severity')=='critical'),None)
+    if urgent:
+        with st.container(key='nw_attention_strip'):
+            a,b=st.columns([3,1])
+        a.warning(urgent['category']+' · '+dollars(urgent['amount'])+(' over budget' if urgent['type']=='overspend' else ' needs attention'))
+        if b.button('Review & Fix',key=key+':urgent',type='primary'):
+            from actions_ui import open_source
+            if urgent['type']=='overspend':open_source(st,state,urgent['source'],review_first=True)
+            else:open_detail(st,state,'Cash Position')
+    st.caption(data['start'].strftime('%d %b %Y')+' – '+(data['end']-timedelta(days=1)).strftime('%d %b %Y'))
+    compare=st.toggle('Compare to Budget',value=st.session_state.get(key+':compare_preference',True),key=key+':compare');st.session_state[key+':compare_preference']=compare
+    from savings_projection import project
+    baseline=data['budget'];forecast=data['summary'];approved=data['approved']
+    known=approved.get('opening_cash_known',approved['plan']['opening_cash']>0)
+    baseline_cash=aggregate(approved['events'],data['start'],'Monthly',approved['plan']['opening_cash'],end=period_end(approved['plan']))[-1]['closing_cash'] if known else None
+    current=project(state['draft'],forecast,data['closing']);budget=project(approved['plan'],baseline,baseline_cash)
+    primary=budget if compare else current
+    with st.container(key='nw_hero_annual'):
+        a,b,c,d=st.columns(4)
+        for col,label,old,new in [(a,'Projected total savings',budget['total'],current['total']),(b,'Spending',baseline['expenses'],forecast['expenses']),(c,'Net income',baseline['income'],forecast['income']),(d,'Closing cash',baseline_cash,data['closing'])]:
+            with col.container(border=True,key='nw_balance_card_'+label.replace(' ','_')):
+                st.metric(label,dollars(old if compare else new))
+                if compare:
+                    difference=None if old is None or new is None else new-old
+                    tone='neutral' if difference is None or difference==0 else 'good' if (difference<0 if label=='Spending' else difference>0) else 'adverse'
+                    variance='' if difference is None else 'No change' if difference==0 else ('+' if difference>0 else '−')+dollars(abs(difference))
+                    st.html('<div class="nw-forecast '+tone+'"><span>Forecast '+dollars(new)+'</span><small>'+variance+'</small></div>')
+                if label=='Projected total savings':
+                    st.caption(('+' if primary['additional']>=0 else '−')+dollars(abs(primary['additional']))+' this period')
+                    if primary['opening'] is None:st.caption('Opening savings not provided')
+    st.caption('Budget with forecast comparison' if compare else 'Latest forecast · approved budget preserved')
+    target=current.get('target')
+    if target:
+        with st.container(border=True):
+            line(st,'Your target',dollars(target['amount']),{'total_savings':'Total savings at period end','additional_savings':'Additional savings this period','closing_cash':'Closing cash at period end'}[target['kind']])
+            if target['projected'] is not None:
+                st.progress(float(max(0,min(1,target['projected']/target['amount']))) if target['amount'] else 0)
+                st.caption('Projected '+dollars(target['projected'])+' · '+dollars(abs(target['variance']))+(' above target' if target['variance']>=0 else ' shortfall'))
+            else:st.caption('Identify the opening balance to see your projection')
+    st.button('Savings & budget details',key=key+':savings_details',on_click=detail_request,args=(state,'Savings & Budget'))
+    left,right=st.columns(2)
+    with left:
+        st.markdown('#### Where your money goes')
         spending={}
-        for event in data['events']:
-            if event['kind']=='expense':spending[event['category']]=spending.get(event['category'],money(0))+event['amount']
-        ranked=sorted(spending.items(),key=lambda pair:pair[1],reverse=True)
-        if ranked:
-            records=[dict(category=name,amount=float(value)) for name,value in ranked[:4]]
-            if len(ranked)>4:records.append(dict(category='Other categories',amount=float(sum((v for _,v in ranked[4:]),money(0)))))
-            mix=alt.Chart(pd.DataFrame(records)).mark_bar(cornerRadiusEnd=5,size=18).encode(
-                y=alt.Y('category:N',sort='-x',title=None,axis=alt.Axis(labelFontSize=13,labelLimit=130)),
-                x=alt.X('amount:Q',title=None,axis=alt.Axis(format='$~s',tickCount=3)),
-                color=alt.Color('category:N',scale=alt.Scale(range=PALETTE),legend=None),
-                tooltip=['category:N',alt.Tooltip('amount:Q',format='$,.2f')]).properties(height=220)
-            st.altair_chart(chart_style(mix),width='stretch')
-            st.caption('Latest forecast spending · '+dollars(data['summary']['expenses']))
+        for e in data['events']:
+            if e['kind']=='expense':spending[e['category']]=spending.get(e['category'],money(0))+e['amount']
+        if spending:
+            total=sum(spending.values(),money(0))
+            records=[dict(category=n,amount=float(v),share=float(v/total)) for n,v in spending.items() if v>0]
+            pick=alt.selection_point(name='mix_category',fields=['category'])
+            chart=alt.Chart(pd.DataFrame(records)).mark_arc(innerRadius=65,outerRadius=105).encode(theta='amount:Q',color=alt.Color('category:N',scale=alt.Scale(range=PALETTE),legend=alt.Legend(orient='bottom',columns=2,title=None,labelLimit=130)),tooltip=['category:N',alt.Tooltip('amount:Q',format='$,.2f'),alt.Tooltip('share:Q',format='.1%',title='Share of spending')]).add_params(pick).properties(height=230)
+            ev=st.altair_chart(chart_style(chart),width='stretch',key=key+':mix:'+str(state.get('_mix_epoch',0)),on_select='rerun',selection_mode='mix_category')
+            chosen=ev.selection.get('mix_category',[]) if ev and hasattr(ev,'selection') else []
+            if chosen:
+                category=chosen[0]['category']
+                state['_home_screen']='Spending';state['_category_detail']=dict(category=category,left=str(data['start']),right=str(data['end']),parent='Overview');st.rerun()
+    with right:
+        st.markdown('#### Cash outlook')
         if data['cash']:
-            st.subheader('Your cash outlook')
-            line(st,'Projected closing cash',dollars(data['closing']),'Lowest projected '+dollars(data['lowest']))
-            curve=pd.DataFrame([dict(date=str(data['start']),cash=float(state['draft']['opening_cash']))]+[dict(date=str(min(data['end']-timedelta(days=1),add_months(date.fromisoformat(r['period']),1)-timedelta(days=1))),cash=float(r['closing_cash'])) for r in data['cash']])
-            trajectory=alt.Chart(curve).mark_line(color=FOREST,strokeWidth=3).encode(x=alt.X('date:T',title=None,axis=alt.Axis(format='%b',tickCount=4)),y=alt.Y('cash:Q',title=None,axis=alt.Axis(format='$~s',tickCount=3)),tooltip=[alt.Tooltip('date:T',format='%d %b %Y'),alt.Tooltip('cash:Q',format='$,.2f')]).properties(height=160)
-            st.altair_chart(chart_style(trajectory),width='stretch')
-            st.caption('Household forecast · not a verified bank balance')
-        else:empty(st,'Cash outlook needs opening cash','Your income and spending forecast remains available.')
-        st.subheader('Coming up')
-        upcoming_left=date.fromisoformat(state.get('tracking_date',str(data['start'])))
-        upcoming_right=upcoming_left+timedelta(days=7)
-        due=sorted([e for e in data['events'] if e['kind']=='expense' and not e.get('allowance') and not e['paid'] and upcoming_left<=e['date']<upcoming_right],key=lambda e:(e['date'],e['name']))
-        st.caption(upcoming_left.strftime('%d %b')+' – '+(upcoming_right-timedelta(days=1)).strftime('%d %b %Y')+' · includes scenario date')
-        for event in due[:3]:line(st,event['name'],dollars(event['amount']),event['date'].strftime('%a %d %b'))
-        if not due:st.caption('No unpaid scheduled payments in this scenario window.')
-        if st.button('Manage upcoming payments',key=key+':upcoming_link'):
-            state['home_view_next']='Upcoming Payments';st.rerun()
-    elif view=='Spending Analysis':spending_analysis(st,state,key+':analysis')
-    elif view=='Cash Flow':cash_flow(st,state,key+':cash',data)
-    elif view=='Cash Position':cash_position(st,state,key+':position',data)
-    else:upcoming(st,state,key+':upcoming',data)
+            line(st,'Projected closing cash',dollars(data['closing']),'Lowest '+dollars(data['lowest']))
+            rows=[dict(month=str(data['start']),cash=float(state['draft']['opening_cash']))]+[dict(month=str(min(data['end']-timedelta(days=1),add_months(date.fromisoformat(r['period']),1)-timedelta(days=1))),cash=float(r['closing_cash'])) for r in data['cash']]
+            curve=alt.Chart(pd.DataFrame(rows)).mark_area(color=FOREST,opacity=.2,line=alt.OverlayMarkDef(color=FOREST)).encode(x=alt.X('month:T',title=None,axis=alt.Axis(format='%b',tickCount=4)),y=alt.Y('cash:Q',title=None,axis=alt.Axis(format='$~s',tickCount=3)),tooltip=[alt.Tooltip('cash:Q',format='$,.2f')]).properties(height=120)
+            st.altair_chart(chart_style(curve),width='stretch')
+            st.caption('Projected · not a verified bank balance')
+        else:st.caption('Add opening cash to see its projected path')
+        a,b=st.columns(2)
+        a.button('Cash position',key=key+':cash_detail',on_click=detail_request,args=(state,'Cash Position'))
+        b.button('Cash flow',key=key+':flow_detail',on_click=detail_request,args=(state,'Cash Flow'))
+        line(st,'Contingency reserved',dollars(current['reserve']),'Unallocated savings '+dollars(current['unallocated']))
+    st.markdown('#### Coming up')
+    today=date.fromisoformat(state['tracking_date'])
+    due=sorted([e for e in data['events'] if e['kind']=='expense' and not e.get('allowance') and not e['paid'] and today<=e['date']<today+timedelta(days=7)],key=lambda e:(e['date'],e['name']))
+    for e in due[:3]:line(st,e['name'],dollars(e['amount']),e['date'].strftime('%a %d %b'))
+    if not due:st.caption('No scheduled payments in the next seven days')
+    if st.button('All upcoming payments',key=key+':payments'):go(st,state,'Payments')
+
+
+def savings_details(st,state,key,data):
+    from savings_projection import project
+    from contingency_ledger import reserve_balance
+    p=project(state['draft'],data['summary'],data['closing'])
+    for label,field in [('Opening savings','opening'),('Additional savings this period','additional'),('Projected total savings','total'),('Contingency reserved','reserve'),('Unallocated projected savings','unallocated')]:line(st,label,dollars(p[field]))
+    balance=reserve_balance(state)
+    with st.expander('Available contingency and recovery'):
+        line(st,'Available to use now',dollars(balance['available']))
+        line(st,'Already committed',dollars(balance['committed']))
+        st.caption('Future savings and recovery promises are not money available today.')
+    if st.button('Adjust contingency',key=key+':contingency'):
+        state['forecast_action_next']='Change contingency';navigate(st,state,'Outlook')
+    with st.expander('Approved budget comparison'):
+        for name,value in data['budget'].items():line(st,name.title(),dollars(value))

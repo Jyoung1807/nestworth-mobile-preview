@@ -30,17 +30,21 @@ def inputs(st,state,key,field=None,forecast=False):
     if selected=='Keep existing approved surplus policy':
         percent=f('number_input','Contingency reserve (%)','legacy_percent',int(state['draft']['contingency_pct']),min_value=0,max_value=100)
         st.caption('Your existing policy stays unchanged. Select another method to change the forecast prospectively.')
+        if percent is None:raise ValueError('Enter a contingency percentage, including 0 for no reserve.')
         return None,percent
     first=max(date.fromisoformat(state['draft']['start']),add_months(date.fromisoformat(state['tracking_date']).replace(day=1),1)) if forecast or state['versions'] else date.fromisoformat(state['draft']['start'])
     if selected==choices[-1]:
         amount=f('number_input','Fixed contingency amount ($)','amount',float(p.get('amount',0)) if p else 0.0,min_value=0.0,step=10.0)
+        if amount is None:raise ValueError('Enter a contingency amount, including 0 for no future reserve.')
         frequency=f('selectbox','Contribution frequency','frequency',p.get('frequency','Weekly') if p else 'Weekly',options=list(FREQUENCIES))
         anchor=date.fromisoformat(str(p.get('first_contribution',first))) if p else first
         anchor=f('date_input','First contribution date','first',anchor,format='DD/MM/YYYY')
+        if anchor is None:raise ValueError('Choose the first contribution date.')
         policy=dict(version=2,method='fixed',amount=money(amount),frequency=frequency,first_contribution=str(anchor))
         st.caption('The first date anchors the schedule; only dates inside your budget/effective period count. Earlier anchors do not rewrite history. A 12-month period can contain 53 weekly dates; 52 weeks contains 52.')
     else:
         percent=f('number_input','Contingency reserve (%)','percentage',float(p.get('percentage',10)) if p else float(state['draft'].get('contingency_pct',10)),min_value=0.0,max_value=100.0,step=1.0)
+        if percent is None:raise ValueError('Enter a contingency percentage, including 0 for no reserve.')
         policy=dict(version=2,method='percentage',percentage=percent)
         st.caption('Based on dated ordinary recurring bills and flexible allowances. Excludes one-offs, projects, holidays, renovations, major purchases, transfers, savings contributions and contingency.')
         with st.expander('Review eligible household spending'):
@@ -74,8 +78,8 @@ def forecast(st,state,key):
     st.caption('Latest forecast policy · '+label(state))
     today=date.fromisoformat(state['tracking_date']);effective=add_months(today.replace(day=1),1)
     if effective>=period_end(state):st.info('No future month remains. Accrued and committed contingency stay protected.');return
-    policy,_=inputs(st,state,key,forecast=True)
     try:
+        policy,_=inputs(st,state,key,forecast=True)
         candidate,command,impact=preview_change(state,policy)
         before=project(state['draft'],impact['before']);after=project(state['draft'],impact['after'])
         def dollars(v):return 'Unknown' if v is None else '$'+f'{v:,.2f}'

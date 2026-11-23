@@ -203,6 +203,8 @@ def inline_transactions(st,state,transactions,rows,key,allow_baseline=True,page_
             choices=[UNKNOWN,*state['categories']]
             current=UNKNOWN if needs_category(row) else row['category']
             def changed(row=row,scope=scope):
+                from app_integrity import require_compatible
+                require_compatible(st)
                 from model_guard import household_model_lock
                 with household_model_lock(state['_nav_key']):
                     state[key+':undo']=deepcopy(row)

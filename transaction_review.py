@@ -30,7 +30,13 @@ def bulk_review(state,transactions,ids,category=None,approve=False):
 def transaction_browser(st,state,transactions,rows,key,allow_baseline=True):
     from spending_ui import inline_transactions
     if not rows:st.caption('No transactions in this selection.');return
+    saved_key=key+':saved_filters'
+    saved=st.session_state.get(saved_key,{})
+    choices={'category':['All categories',UNKNOWN,*state['categories']],'merchant':['All merchants',*sorted({r['description'] for r in rows})],'status':['All statuses','Needs review','Reviewed','Excluded one-offs'],'queue':['Needs review','Confirmed','All']}
+    for name,value in saved.items():
+        if key+':'+name not in st.session_state and (name not in choices or value in choices[name]):st.session_state[key+':'+name]=value
     st.caption(f'{len(rows):,} records · {sum(not r.get("reviewed") for r in rows):,} awaiting explicit review · {sum(needs_category(r) for r in rows):,} uncategorised')
+    queue=st.radio('Review queue',['Needs review','Confirmed','All'],horizontal=True,key=key+':queue')
     query=st.text_input('Search transactions',key=key+':search',placeholder='Search description, amount or date')
     with st.popover('Filters',key=key+':filters'):
         category=st.selectbox('Review category',['All categories',UNKNOWN,*[c for c in state['categories'] if c!=UNKNOWN]],key=key+':category')
@@ -40,6 +46,8 @@ def transaction_browser(st,state,transactions,rows,key,allow_baseline=True):
             first=min(date.fromisoformat(r['date']) for r in rows);last=max(date.fromisoformat(r['date']) for r in rows)
             left=st.date_input('Transactions from',value=first,key=key+':from');right=st.date_input('Transactions through',value=last,key=key+':through')
     selected=filter_transactions(rows,query,category,merchant,left,right,status)
+    selected=[r for r in selected if queue=='All' or bool(r.get('reviewed'))==(queue=='Confirmed') and not (queue=='Needs review' and r.get('excluded_duplicate'))]
+    st.session_state[saved_key]=dict(search=query,category=category,merchant=merchant,status=status,queue=queue,**{'from':left,'through':right})
     signature=str((query,category,merchant,left,right,status,len(selected)))
     if state.setdefault('review_filters',{}).get(key)!=signature:
         st.session_state[key+':page']=1;state['review_filters'][key]=signature
@@ -47,7 +55,35 @@ def transaction_browser(st,state,transactions,rows,key,allow_baseline=True):
     shown=selected[(page-1)*8:page*8]
     st.caption(f'{len(selected):,} matching · showing {len(shown)}')
     # Eight records maximum, with the shared inline category/exclusion callback.
-    inline_transactions(st,state,transactions,shown,key+':inline',allow_baseline,page_size=8)
+    focused=state.get(key+':focused')
+    if focused:
+        row=next((r for r in rows if r['id']==focused),None)
+        if row:
+            if st.button('Back to transactions',key=key+':back'):state.pop(key+':focused',None);st.rerun()
+            inline_transactions(st,state,transactions,[row],key+':inline',allow_baseline,page_size=8)
+            if not allow_baseline:
+                from observations import set_duplicate
+                with st.expander('Duplicate review'):
+                    duplicate=bool(row.get('excluded_duplicate'))
+                    matches={r['id']:r for r in transactions if r['id']!=row['id'] and not r.get('excluded_duplicate') and r['date']==row['date'] and r['amount']==row['amount']}
+                    original=st.selectbox('Original transaction to keep',list(matches),format_func=lambda i:matches[i]['description']+' · '+matches[i]['date']+' · $'+str(matches[i]['amount']),key=key+':original:'+row['id']) if matches and not duplicate else None
+                    if not matches and not duplicate:st.caption('No matching date and amount. These records cannot be treated as duplicates.')
+                    confirmed=st.checkbox('I have verified this is a duplicate',key=key+':duplicate_ack:'+row['id']+':'+str(original)) if not duplicate else True
+                    if st.button('Restore duplicate' if duplicate else 'Exclude confirmed duplicate',disabled=not confirmed or not duplicate and not matches,key=key+':duplicate:'+row['id']):
+                        try:set_duplicate(state,row['id'],not duplicate,duplicate_of=original)
+                        except ValueError as error:st.warning(str(error))
+                        else:state.pop(key+':focused',None);st.rerun()
+            if st.button('Confirm transaction',key=key+':confirm',type='primary',disabled=needs_category(row)):
+                before=deepcopy(row);bulk_review(state,transactions,[row['id']],approve=True)
+                state.setdefault('transaction_audit',[]).append(dict(type='Review confirmed',transaction_id=row['id'],before=before,after=deepcopy(row)))
+                state.pop(key+':focused',None);st.rerun()
+            return
+    if not shown:st.caption('Nothing in this queue. Choose Confirmed or All to see reviewed records.')
+    for row in shown:
+        label=row['description']+' · $'+f"{money(row['amount']):,.2f}"+' · '+row['date']+' · '+(row.get('category') or 'Needs a category')+(' · Duplicate excluded' if row.get('excluded_duplicate') else '')
+        if st.button(label,key=key+':open:'+row['id'],width='stretch'):
+            state[key+':focused']=row['id'];st.rerun()
+
     ids=[r['id'] for r in shown];names={r['id']:r['date']+' · '+r['description'] for r in shown}
     with st.expander('Review selected records / bulk actions'):
         all_page=st.checkbox('Select this page',key=key+':all:'+signature)

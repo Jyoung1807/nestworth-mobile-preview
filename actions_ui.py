@@ -22,11 +22,12 @@ def navigate(st,state,page,focus=None):
 
 
 def open_source(st,state,source,grouping=None,review_first=False):
+    if state.get('_last_route')!='Actions':state['_action_return']=dict(page=state.get('_last_route','Home'),screen=state.get('_home_screen','Overview'),detail=deepcopy(state.get('_category_detail')))
     existing=state.get('action_workflow')
     if not existing or existing['source']!=source:
         action=next((a for a in collect_actions(state) if a.get('source')==source and a['type']=='overspend'),{})
         state['action_workflow']=dict(source=source,label=action.get('category',source.rsplit(':',1)[-1]),step=1,response='Offset another spending category',grouping=grouping or ('Month' if state.get('dashboard_view')=='Monthly' else 'Week'))
-    if review_first:state['action_workflow']['review_stage']=True
+    if review_first:state['action_workflow'].update(review_stage=True,had_review=True)
     navigate(st,state,'Actions Centre')
 
 
@@ -95,7 +96,7 @@ def current_selection(wf):
     return {field:deepcopy(wf[field]) for field in fields if field in wf}
 
 
-def render_category_configuration(st,state,wf,key,start,end,today,unresolved,fixed_mode=None):
+def render_category_configuration(st,state,wf,key,start,end,today,unresolved,fixed_mode=None,force_custom=False):
     wf['configured']=False
     grouping=st.radio('Recover over',['Month','Week'],index=0 if wf.get('grouping','Week')=='Month' else 1,key=key+':grouping')
     wf['grouping']=grouping
@@ -113,7 +114,7 @@ def render_category_configuration(st,state,wf,key,start,end,today,unresolved,fix
     default_mode=wf.get('mode') or ('flexible' if any(available_events(state,c,left,right,'flexible') for c in state['categories']) else 'scheduled')
     mode_label=('Flexible allowances' if fixed_mode=='flexible' else 'Scheduled payments') if fixed_mode else st.radio('Spending to reduce',modes,index=0 if default_mode=='flexible' else 1,key=key+':mode')
     mode='flexible' if mode_label==modes[0] else 'scheduled';wf['mode']=mode
-    st.caption('Calendar-day distribution uses entries marked Flexible spending allowance in Build Your Budget. Scheduled bills keep their payment dates.')
+    st.caption('Choose a future period and the spending you want to reduce.')
     events=result(state,accounting=False)[0]
     categories=sorted({e['category'] for e in events if e['kind']=='expense'})
     caps={c:sum((e['capacity'] for e in available_events(state,c,left,right,mode)),Decimal(0)) for c in categories}
@@ -128,20 +129,21 @@ def render_category_configuration(st,state,wf,key,start,end,today,unresolved,fix
             st.button('Next eligible payment',key=key+':next_payment',on_click=jump,disabled=left<=next_day<right,width='stretch')
     if not choices:
         st.info('No eligible '+mode_label.lower()+' in this period. Choose another period or spending type. Paid, elapsed and consumed spending is excluded.');return
-    category=st.selectbox('Recovery category',choices,index=choices.index(wf['category']) if wf.get('category') in choices else 0,format_func=lambda c:c+' · '+dollars(caps[c])+' eligible',key=key+':category:'+str(left)+':'+mode)
+    category=st.selectbox('Recovery category',choices,index=choices.index(wf['category']) if wf.get('category') in choices else 0,format_func=lambda c:c+' · '+dollars(caps[c])+' available',key=key+':category:'+str(left)+':'+mode)
     current=sum((e['amount'] for e in events if e['kind']=='expense' and e['category']==category and left<=e['date']<right and bool(e.get('allowance'))==(mode=='flexible')),Decimal(0))
     frequencies=sorted({str(item.get('frequency','Dated payments')) for item in state['draft']['expenses'] if item['category']==category and bool(item.get('allowance'))==(mode=='flexible')})
     st.caption('Current period allocation '+dollars(current)+' · '+', '.join(frequencies)+' · '+dollars(caps[category])+' eligible to reduce')
     maximum=min(unresolved,caps[category])
     if maximum<=0:st.info('This source is already fully committed. Go Back or Cancel.');return
-    amount=st.number_input('Recovery amount ($)',min_value=0.01,max_value=float(maximum),value=float(min(money(wf.get('amount',maximum)),maximum)) or .01,step=1.0,key=key+':amount:'+str(left)+':'+category+':'+mode+':'+str(maximum))
+    amount=st.number_input('Recovery amount ($)',min_value=0.01,max_value=float(maximum),value=float(min(money(wf.get('amount') if wf.get('amount') is not None else maximum),maximum)) or .01,step=1.0,key=key+':amount:'+str(left)+':'+category+':'+mode+':'+str(maximum))
+    if amount is None:st.info('Enter the amount you want to cover.');return
     wf.update(category=category,amount=amount)
     try:
         preview=distribution_preview(state,category,left,right,amount,mode=mode)
         custom=None
         if mode=='flexible':
-            st.caption('Even reduction per eligible calendar day. Only days inside this period count; no four-week approximation.')
-            use_custom=st.checkbox('Custom weekly amounts',value=bool(wf.get('custom')),key=key+':custom')
+            st.caption('Your reduction is spread across the remaining days in this period.')
+            use_custom=force_custom or st.checkbox('Custom weekly amounts',value=bool(wf.get('custom')),key=key+':custom')
             if use_custom:
                 old=wf.get('custom') or {}
                 custom={date.fromisoformat(w['week']):money(st.number_input(w['label'],min_value=0.0,max_value=float(w['capacity']),value=float(min(money(old.get(date.fromisoformat(w['week']),w['amount'])),w['capacity'])),key=key+':custom:'+w['week']+':'+str(left)+':'+category)) for w in preview['weeks']}
@@ -163,7 +165,7 @@ def render_plan_configuration(st,state,wf,key,start,end,today,unresolved):
     project=st.selectbox('Planned expense',list(plans),index=list(plans).index(wf['project']) if wf.get('project') in plans else 0,format_func=lambda identity:plans[identity]+' · '+dollars(sum((e['amount'] for e in events if e.get('project_id')==identity and not e['paid'] and today<e['date']<end),Decimal(0)))+' unpaid',key=key+':project')
     action=st.radio('Change the plan',['Reduce','Postpone','Cancel'],index=['Reduce','Postpone','Cancel'].index(wf.get('plan_action','Reduce')),key=key+':plan_action')
     amount=0;new_date=None
-    if action=='Reduce':amount=st.number_input('Plan reduction ($)',min_value=.01,value=float(wf.get('plan_amount',min(20,unresolved))) or .01,key=key+':plan_amount')
+    if action=='Reduce':amount=st.number_input('Plan reduction ($)',min_value=.01,value=float(wf.get('plan_amount') or min(20,unresolved)) or .01,key=key+':plan_amount')
     if action=='Postpone':
         first=min(e['date'] for e in events if e.get('project_id')==project and not e['paid'] and e['date']>today)
         new_date=st.date_input('New first payment date',value=date.fromisoformat(wf['new_date']) if wf.get('new_date') else first+timedelta(days=7),min_value=first+timedelta(days=1),key=key+':plan_date')
@@ -189,6 +191,9 @@ def render_source_review(st,state,key,workflow):
         if st.button('Return to To Do',key=key+':done'):state.pop('action_workflow',None);st.rerun()
         return
     left,right=period_for(state,action)
+    if st.button('Back',key=key+':source_back'):
+        from consumer_navigation import return_to_context
+        return_to_context(st,state)
     st.subheader('Review '+action['category']+' overspend')
     if left and right:st.caption(left.strftime('%d %b')+' – '+(right-timedelta(days=1)).strftime('%d %b %Y'))
     st.warning(dollars(action['remaining'])+' still needs a decision. Its spending impact is already in the forecast.')
@@ -197,7 +202,6 @@ def render_source_review(st,state,key,workflow):
     duplicate_review(st,state,key+':duplicates',rows)
     if st.button('Choose recovery action',type='primary',key=key+':continue',width='stretch'):
         workflow['review_stage']=False;st.rerun()
-    if st.button('Return to To Do',key=key+':back'):state.pop('action_workflow',None);st.rerun()
 
 
 def duplicate_review(st,state,key,rows):
@@ -227,7 +231,7 @@ def funding_amounts(st,current,reduction,unresolved,left,right,label,credit=None
     """Display the eligible unpaid portion, never imply paid spending can be cut."""
     from datetime import timedelta
     st.caption(label+' · '+left.strftime('%d %b %Y')+' – '+(right-timedelta(days=1)).strftime('%d %b %Y'))
-    st.write('Current eligible amount: **'+dollars(current)+'**')
-    st.write('Proposed reduction: **'+dollars(reduction)+'** → Revised eligible amount: **'+dollars(current-reduction)+'**')
-    st.write('Remaining overspend after adjustment: **'+dollars(max(Decimal(0),unresolved-(reduction if credit is None else credit)))+'**')
-    st.caption('Only unpaid, unconsumed and uncommitted spending is eligible. Original frequency and payment dates remain unchanged unless explicitly rescheduled.')
+    st.write('Available to adjust: **'+dollars(current)+'**')
+    st.write('Use / reduce by: **'+dollars(reduction)+'** → Leaves: **'+dollars(current-reduction)+'**')
+    st.write('Still to cover: **'+dollars(max(Decimal(0),unresolved-(reduction if credit is None else credit)))+'**')
+    st.caption('Past spending and paid bills stay unchanged.')

@@ -51,13 +51,19 @@ def render_history(st,data,key,categories,state=None):
 
 
 def render_demo(st,client,household_id,household_name,account_renderer=None):
+    from app_integrity import require_compatible
+    require_compatible(st)
     from mobile_ui import mobile_styles
     mobile_styles(st)
     user_id=client.auth.get_user().user.id
     from model_guard import household_model_lock
     # Auth is verified before entering the model transaction. The same namespace
     # is used by inline financial callbacks, which run before the next render.
-    with household_model_lock(demo_state(st.session_state,user_id,household_id)[1]+':page'):
+    scope=demo_state(st.session_state,user_id,household_id)[1]
+    from projection_cache import projection_scope
+    cache_key=scope+':projection_cache'
+    if cache_key not in st.session_state:st.session_state[cache_key]={}
+    with household_model_lock(scope+':page'),projection_scope(st.session_state[cache_key]):
         _render_household_model(st,user_id,household_id,household_name,account_renderer)
 
 
@@ -83,15 +89,22 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
     if current=='Home' and (state.get('_last_route')!='Home' or state.pop('_home_next_weekly',False)):
         state['dashboard_view']='Weekly';st.session_state[key+':overview:view']='Weekly'
     previous_route=state.get('_last_route');state['_last_route']=current
+    if current in ('Home','BudgetSpending','Payments') and (request or previous_route!=current) and not state.pop('_restore_context',False):
+        state['_home_screen']={'Home':'Overview','BudgetSpending':'Spending','Payments':'Upcoming Payments'}[current]
+        state.pop('_category_detail',None)
     actions=collect_actions(state);count=decision_count(actions)
     action_focus=state.pop('_actions_focus_view',None) if current=='Actions' else None
     if action_focus:
         state['action_list_view']=action_focus;st.session_state[key+':actions:list']=action_focus
     elif current=='Actions' and previous_route!='Actions' and count and not state.get('action_workflow'):
         state['action_list_view']='Needs attention';st.session_state[key+':actions:list']='Needs attention'
-    labels={'Home':'Home','Setup':'Build Your Budget','Spending':'Transactions','Outlook':'Adjust Forecast','Actions':('To Do · '+str(count) if count else 'To Do'),'Settings':'Settings'}
+    labels={'BudgetSpending':'Spending','Payments':'Upcoming Payments','More':'More','Home':'Overview','Setup':'Build Your Budget','Spending':'Transactions','Outlook':'Adjust Forecast','Actions':('To Do · '+str(count) if count else 'To Do'),'Settings':'Settings'}
     st.sidebar.caption('YOUR HOUSEHOLD')
-    page=st.sidebar.radio('Workspace',ROUTES,format_func=labels.get,key=nav_key)
+    page=current
+    from consumer_navigation import go,request
+    for destination in ROUTES:
+        if destination=='More':continue
+        st.sidebar.button(labels[destination],key=key+':navigation:'+destination,type='primary' if current==destination else 'secondary',width='stretch',on_click=request,args=(state,st.session_state,destination))
     with st.sidebar.expander('Demo / testing controls'):
         new_start=st.date_input('Scenario start month',value=date.fromisoformat(data['start']),key=key+':scenario_date')
         reset_ok=st.checkbox('Create a separate seeded demo household',key=key+':reset_confirm')
@@ -102,10 +115,6 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
             st.session_state[target]=dict(new_demo(new_start.replace(day=1)),_test_only=True,test_name='Seeded synthetic demo')
             st.rerun()
         st.caption('Creates a separate fictional scenario; existing approved budgets and history remain untouched. Use Clean setup testing for an empty household.')
-    with st.container(key='mobile_utilities'):
-        a,b=st.columns(2)
-        if a.button('Build Your Budget',key=key+':setup_entry',width='stretch'):st.session_state[nav_key+':next']='Setup';st.rerun()
-        if b.button('Settings',key=key+':settings_entry',width='stretch'):st.session_state[nav_key+':next']='Settings';st.rerun()
     from navigation_layout import navigation_layout
     active_step=setup['step'] if setup.get('step_next') else st.session_state.get(key+':setup:step',setup['step'])
     active_topic=setup.get('household_section','People') if setup.get('household_next') else st.session_state.get(key+':setup:household:section',setup.get('household_section','People'))
@@ -119,11 +128,15 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
         elif page=='Spending':state['spending_focus']=focus
         elif page=='Outlook':state['outlook_focus']=focus;st.session_state[key+':year:view']='Summary'
     if data.get('_test_only') and not data.get('_fixture_version'):st.caption(data['test_name']+(' · populated fictional test household' if data.get('_fixture_version') else ' · empty-start fictional test household')+' · session only')
+    from consumer_navigation import header,more
+    notification_view=header(st,state,key,actions)
     from quick_actions import shortcut,render as render_quick_expense
-    quick=shortcut(st,state,key,page) if state['versions'] and page in ('Home','Outlook','Spending') else False
-    if quick:
+    quick=bool(state.get('_quick_expense') and state['_quick_expense']['page']==page and not state['_quick_expense'].get('suspended'))
+    if state['versions'] and page=='Spending' and not quick:quick=shortcut(st,state,key,page)
+    if notification_view:pass
+    elif quick:
         render_quick_expense(st,state,key)
-    elif page=='Home':
+    elif page in ('Home','BudgetSpending','Payments'):
         from home_dashboard import render_home
         render_home(st,state,key+':overview')
     elif page=='Spending':
@@ -135,6 +148,7 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
     elif page=='Outlook':
         from outlook_workflows import outlook
         outlook(st,state,key+':year')
+    elif page=='More':more(st,state,key)
     elif page=='Setup':
         from setup_ui import render_setup
         render_setup(st,state,key+':setup')
@@ -152,7 +166,5 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
     # workaround or persistent financial store is involved.
     with st.container(key='daily_nav'):
         cols=st.columns(4)
-        for col,(target,icon) in zip(cols,[('Home',':material/home:'),('Spending',':material/receipt_long:'),('Actions',':material/notifications:'),('Outlook',':material/monitoring:')]):
-            if col.button(labels[target],icon=icon,key=key+':daily:'+target,type='primary' if page==target else 'secondary',width='stretch'):
-                if target=='Home':state['_home_next_weekly']=True
-                st.session_state[nav_key+':next']=target;st.rerun()
+        for col,(target,icon) in zip(cols,[('Home',':material/home:'),('BudgetSpending',':material/bar_chart:'),('Payments',':material/calendar_month:'),('More',':material/menu:')]):
+            col.button(labels[target],icon=icon,key=key+':daily:'+target,type='primary' if page==target else 'secondary',width='stretch',on_click=request,args=(state,st.session_state,target))

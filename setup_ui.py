@@ -85,7 +85,8 @@ def assumptions(st,state,key):
     st.markdown('**Budget assumptions**')
     from contingency_ui import inputs,current_policy
     def reserve_field(kind,label,name,default,**kwargs):return field(st,state,scope,STEPS[4],kind,label,name,default,**kwargs)
-    policy,legacy_percent=inputs(st,state,key+':reserve',reserve_field)
+    try:policy,legacy_percent=inputs(st,state,key+':reserve',reserve_field)
+    except ValueError as error:st.info(str(error));return False
     goal=field(st,state,scope,STEPS[4],'number_input','Savings aspiration (optional $)','goal',float(state['draft']['goal']) if state['draft']['goal'] else None,min_value=0.0,step=100.0)
     known=setup.get('opening_cash_known',state['draft']['opening_cash']>0)
     cash=field(st,state,scope,STEPS[4],'number_input','Opening cash (optional $)','cash',float(state['draft']['opening_cash']) if known else None,min_value=0.0,step=100.0)

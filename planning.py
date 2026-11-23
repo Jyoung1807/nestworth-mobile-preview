@@ -8,6 +8,8 @@ from decimal import Decimal, ROUND_DOWN
 from uuid import uuid4
 from finance import money, payment_dates, add_months, CATEGORIES
 
+from projection_cache import memo_projection
+
 ZERO = Decimal('0.00')
 
 
@@ -300,6 +302,7 @@ def summarize(events,start,end=None):
     return {'income':income,'expenses':expense,'contingency':reserve,'savings':income-expense-reserve}
 
 
+@memo_projection
 def aggregate(events,start,period='Monthly',opening_cash=0,end=None):
     if period not in ('Monthly','Weekly'): raise ValueError('Choose monthly or weekly aggregation')
     from household_calendar import week_start,week_label
@@ -346,6 +349,7 @@ def aggregate(events,start,period='Monthly',opening_cash=0,end=None):
     return result
 
 
+@memo_projection
 def result(state, decisions=None, plan=None, accounting=True):
     draft=plan or state['draft']
     original=state['versions'][-1]['events'] if state['versions'] else None
@@ -475,6 +479,7 @@ def approved_savings(state):
 from budget_period import BudgetPeriod,period_end
 
 
+@memo_projection
 def dated_cash(events,start,end,opening_cash=0):
     """Daily cash path over the same income/expense events used by aggregate.
 
