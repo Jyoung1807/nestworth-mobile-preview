@@ -15,8 +15,8 @@ def uid():
     return uuid4().hex
 
 
-def new_planner(start, income=(), expenses=()):
-    start=start.replace(day=1)
+def new_planner(start, income=(), expenses=(), end_exclusive=None):
+    start=start.replace(day=1) if end_exclusive is None else start
     def entries(rows):
         return [dict(deepcopy(row), id=uid(), estimated=True, subcategory='') for row in rows]
     # Rename only known fictional fixture labels; never infer new amounts.
@@ -25,12 +25,18 @@ def new_planner(start, income=(), expenses=()):
     expenses=deepcopy(expenses)
     for row in expenses:
         if row.get('name')==row.get('category','')+' plan': row['name']=seed_names.get(row['category'],row['name'])
-    return {'draft':{'start':str(start), 'income':entries(income), 'expenses':entries(expenses),
+    state={'draft':{'start':str(start), 'income':entries(income), 'expenses':entries(expenses),
                      'projects':[], 'goal':24000.0, 'contingency_pct':10, 'opening_cash':0.0},
             'profile':{'adults':2,'ages':[5,9],'housing':'Mortgage','pool':False,'garden':True,
                        'cars':1,'boats':0,'caravans':0,'other_assets':'','notes':''},
             'categories':list(CATEGORIES), 'subcategories':{}, 'skipped':[],
             'versions':[], 'decisions':[], 'history':[]}
+    if end_exclusive is not None:
+        from budget_period import BudgetPeriod
+        period=BudgetPeriod(start,end_exclusive);state['draft']['end_exclusive']=str(period.end);state['draft']['goal']=0
+        from contingency_policy import default_policy
+        state['draft']['contingency_policy']=default_policy()
+    return state
 
 
 def suggestions(profile):
@@ -93,12 +99,16 @@ def event_total(events, kind=None, start=None, end=None):
 
 def scheduled_events(plan):
     from category_catalog import category_id,subcategory_id
-    start=date.fromisoformat(plan['start']); end=add_months(start,12)
+    start=date.fromisoformat(plan['start']); end=period_end(plan)
     result=[]
     ids=[]
     for kind,key in [('income','income'),('expense','expenses')]:
         for item in plan[key]:
             ids.append(item['id'])
+            if plan.get('end_exclusive') and item.get('allowance'):
+                from allowance_allocations import period_events
+                if not item['name'].strip():raise ValueError('Every allowance needs a name')
+                result.extend(period_events(item,start,end));continue
             if item.get('allowance') and item.get('allocation_method')=='consistent':
                 from allowance_allocations import consistent_events
                 if item['frequency'] not in ('Weekly','Fortnightly','Monthly','Quarterly','Six-monthly','Annual'):raise ValueError('Choose a supported allowance frequency')
@@ -139,14 +149,21 @@ def scheduled_events(plan):
                                'category':project['category'],'subcategory':project.get('subcategory',''),
                                'kind':'expense','date':day,'amount':money(payment['amount']),'paid':False,'estimated':payment.get('precision','Exact date')!='Exact date'})
     if len(ids)!=len(set(ids)): raise ValueError('Item IDs must be unique')
-    percent=Decimal(str(plan['contingency_pct']))
-    if not percent.is_finite() or not 0<=percent<=100: raise ValueError('Invalid contingency percentage')
-    for n in range(12):
-        day=add_months(start,n); boundary=add_months(start,n+1)
-        surplus=event_total(result,'income',day,boundary)-event_total(result,'expense',day,boundary)
-        reserve=(max(ZERO,surplus)*percent/100).quantize(Decimal('.01'))
-        result.append({'id':f'reserve:{n}','item_id':'reserve','project_id':None,'name':'Contingency reserve',
-                       'category':'Contingency','subcategory':'','kind':'reserve','date':day,'amount':reserve,'paid':False})
+    if plan.get('contingency_policy'):
+        from contingency_policy import monthly_events,eligible
+        definitions={item['id']:item for item in plan['expenses']}
+        for event in result:
+            if event['kind']=='expense':event['contingency_eligible']=eligible(definitions[event['item_id']]) if event['item_id'] in definitions and not event.get('project_id') else False
+        result.extend(monthly_events(plan,result))
+    else:
+        percent=Decimal(str(plan['contingency_pct']))
+        if not percent.is_finite() or not 0<=percent<=100: raise ValueError('Invalid contingency percentage')
+        spans=BudgetPeriod.from_plan(plan).months() if plan.get('end_exclusive') else [(add_months(start,n),add_months(start,n+1)) for n in range(12)]
+        for n,(day,boundary) in enumerate(spans):
+            surplus=event_total(result,'income',day,boundary)-event_total(result,'expense',day,boundary)
+            reserve=(max(ZERO,surplus)*percent/100).quantize(Decimal('.01'))
+            result.append({'id':f'reserve:{n}','item_id':'reserve','project_id':None,'name':'Contingency reserve',
+                           'category':'Contingency','subcategory':'','kind':'reserve','date':day,'amount':reserve,'paid':False})
     for event in result:
         event['category_id']=category_id(event['category'])
         event['subcategory_id']=subcategory_id(event['category_id'],event['subcategory'])
@@ -191,7 +208,7 @@ def reduce_events(candidates, amount):
 
 def replay(plan, decisions, as_of=None, actuals=(), originals=None, source_events=None):
     from category_catalog import category_id
-    start=date.fromisoformat(plan['start']); end=add_months(start,12)
+    start=date.fromisoformat(plan['start']); end=period_end(plan)
     as_of=as_of or start
     raw=scheduled_events(plan) if source_events is None else deepcopy(source_events)
     events=apply_actuals(raw,originals or raw,actuals,as_of)
@@ -274,18 +291,22 @@ def replay(plan, decisions, as_of=None, actuals=(), originals=None, source_event
     return sorted(events,key=lambda e:(e['date'],e['id'])),explanations
 
 
-def summarize(events,start):
-    end=add_months(start,12)
+def summarize(events,start,end=None):
+    end=end or add_months(start,12)
     income=event_total(events,'income',start,end)
     expense=event_total(events,'expense',start,end)
-    reserve=event_total(events,'reserve',start,end)
+    from contingency_policy import dated_earmarks
+    reserve=sum((e['amount'] for e in dated_earmarks(events) if e['kind']=='reserve' and start<=e['date']<end),ZERO)
     return {'income':income,'expenses':expense,'contingency':reserve,'savings':income-expense-reserve}
 
 
-def aggregate(events,start,period='Monthly',opening_cash=0):
+def aggregate(events,start,period='Monthly',opening_cash=0,end=None):
     if period not in ('Monthly','Weekly'): raise ValueError('Choose monthly or weekly aggregation')
     from household_calendar import week_start,week_label
-    end=add_months(start,12); opening=money(opening_cash); rows={}
+    from contingency_policy import dated_earmarks
+    events=dated_earmarks(events)
+    legacy_end=end is None
+    end=end or add_months(start,12); opening=money(opening_cash); rows={}
     for event in events:
         if not start<=event['date']<end: continue
         day=event['date']
@@ -297,7 +318,7 @@ def aggregate(events,start,period='Monthly',opening_cash=0):
         if event['paid']:
             row['actuals']+=event['amount'] if event['kind']=='income' else -event['amount']
     # Include zero-payment weeks/months, not just populated periods.
-    cursor=start if period=='Monthly' else week_start(start)
+    cursor=(start if legacy_end else start.replace(day=1)) if period=='Monthly' else week_start(start)
     while cursor<end:
         key=cursor.isoformat()
         rows.setdefault(key,{'period':key,'income':ZERO,'expenses':ZERO,'reserve':ZERO,'actuals':ZERO})
@@ -336,6 +357,10 @@ def result(state, decisions=None, plan=None, accounting=True):
         cutoff=date.fromisoformat(state['frozen_until'])
         raw=[e for e in raw if e['date']>=cutoff and not (e['kind']=='reserve' and e['date']==cutoff)]+[e for e in dated_allocations(state['frozen_schedule']) if e['date']<cutoff or (e['kind']=='reserve' and e['date']==cutoff)]
     source=revise_events(raw,state.get('revisions',[]))
+    from payment_rescheduling import apply_reschedules
+    source=apply_reschedules(source,state.get('payment_reschedules',[]))
+    from contingency_policy import forecast_events
+    source=forecast_events(state,source,draft)
     events,explanations=replay(draft,state['decisions'] if decisions is None else decisions,
                   as_of=date.fromisoformat(draft['start']),actuals=state.get('actuals',[]), originals=original,source_events=source)
     from action_finance import apply_plan_recoveries
@@ -344,9 +369,14 @@ def result(state, decisions=None, plan=None, accounting=True):
         from accountability import dated_allocations
         events=dated_allocations(events)
     events=apply_recoveries(events,state.get('recoveries',[]))
+    from contingency_policy import forecast_events
+    events=forecast_events(state,events,draft,source)
     from contingency_ledger import apply_reserve_uses
     events=apply_reserve_uses(events,state.get('contingency_uses',[]))
-    return (observed_events(events,state) if accounting else events),explanations
+    events=observed_events(events,state) if accounting else events
+    if draft.get('end_exclusive'):
+        bounds=BudgetPeriod.from_plan(draft);events=[e for e in events if bounds.contains(e['date'])]
+    return events,explanations
 
 
 def approve(state,stretch_goal=None):
@@ -355,9 +385,14 @@ def approve(state,stretch_goal=None):
     if not plan['income']: raise ValueError('Add at least one income source before approval')
     money(plan['goal'])
     version={'number':len(state['versions'])+1,'plan':deepcopy(plan),'events':deepcopy(events),
-             'decisions':deepcopy(state['decisions']),'summary':summarize(events,date.fromisoformat(plan['start']))}
+             'decisions':deepcopy(state['decisions']),'summary':summarize(events,date.fromisoformat(plan['start']),period_end(plan))}
+    if state.get('reserve_changes') or plan.get('contingency_policy'):
+        from contingency_policy import sequence
+        version['reserve_sequence']=sequence(state)
+        version['reserve_changes']=deepcopy(state.get('reserve_changes',[]))
+    if state.get('payment_reschedules'):version['payment_reschedules']=deepcopy(state['payment_reschedules'])
     version['savings_baseline']=version['summary']['savings']
-    expected=summarize(result(state,accounting=False)[0],date.fromisoformat(plan['start']))
+    expected=summarize(result(state,accounting=False)[0],date.fromisoformat(plan['start']),period_end(plan))
     version['approval_context']={'review_date':state.get('tracking_date'),
         'observed_savings_impact':expected['savings']-version['summary']['savings'],
         'recovery_forecast_reduction':sum((money(r['amount']) for r in [*state.get('recoveries',[]),*state.get('plan_recoveries',[])]),ZERO)}
@@ -369,7 +404,7 @@ def approve(state,stretch_goal=None):
             values=version['approval_context']['contingency_uses'];identity=allocation['event_id'];values[identity]=values.get(identity,ZERO)+allocation['amount']
     version['draft_aspiration']=money(plan['goal'])
     version['stretch_goal']=money(stretch_goal) if stretch_goal is not None else None
-    version['monthly_allocations']=deepcopy(aggregate(events,date.fromisoformat(plan['start'])))
+    version['monthly_allocations']=deepcopy(aggregate(events,date.fromisoformat(plan['start']),end=period_end(plan)))
     version['category_allocations']={}
     for event in events:
         if event['kind']=='expense':
@@ -390,12 +425,16 @@ def change_decision(state,decision=None,remove_id=None):
     before,_=result(state); after,explanations=result(state,decisions=candidate)
     state['decisions']=candidate
     state['history'].append({'sequence':len(state['history'])+1,'before_decisions':old,'after_decisions':deepcopy(candidate),
-                             'before':summarize(before,date.fromisoformat(state['draft']['start'])),
-                             'after':summarize(after,date.fromisoformat(state['draft']['start'])),
+                             'before':summarize(before,date.fromisoformat(state['draft']['start']),period_end(state)),
+                             'after':summarize(after,date.fromisoformat(state['draft']['start']),period_end(state)),
                              'explanations':deepcopy(explanations)})
 
 
 def replace_draft(state,candidate):
+    if state['versions'] and candidate.get('contingency_policy')!=state['draft'].get('contingency_policy'):
+        raise ValueError('Change forecast contingency prospectively; the approved policy cannot be rewritten through budget editing.')
+    if state['versions'] and BudgetPeriod.from_plan(candidate)!=BudgetPeriod.from_plan(state['draft']):
+        raise ValueError('The approved budget period is locked. Create a separate budget for different dates.')
     before,_=result(state)
     proposed=deepcopy(state)
     if state['versions']:
@@ -413,8 +452,8 @@ def replace_draft(state,candidate):
         state['frozen_until']=proposed['frozen_until']
         state['history'].append({'sequence':len(state['history'])+1,'description':'Updated forecast assumptions',
                                  'before_plan':deepcopy(state['draft']),'after_plan':deepcopy(candidate),
-                                 'before':summarize(before,date.fromisoformat(candidate['start'])),
-                                 'after':summarize(after,date.fromisoformat(candidate['start']))})
+                                 'before':summarize(before,date.fromisoformat(candidate['start']),period_end(candidate)),
+                                 'after':summarize(after,date.fromisoformat(candidate['start']),period_end(candidate))})
     state['draft']=deepcopy(candidate)
 
 
@@ -431,3 +470,23 @@ def approved_savings(state):
     if not state['versions']:return None
     version=state['versions'][-1]
     return version.get('savings_baseline',version['summary']['savings'])
+
+
+from budget_period import BudgetPeriod,period_end
+
+
+def dated_cash(events,start,end,opening_cash=0):
+    """Daily cash path over the same income/expense events used by aggregate.
+
+    Reserve/provision earmarks are not cash outflows. Same-day events are netted;
+    this does not claim to model intraday bank settlement order.
+    """
+    days={}
+    for event in events:
+        if start<=event['date']<end and event['kind'] in ('income','expense'):
+            days[event['date']]=days.get(event['date'],ZERO)+(event['amount'] if event['kind']=='income' else -event['amount'])
+    balance=money(opening_cash);rows=[]
+    for day in sorted(days):
+        before=balance;balance+=days[day]
+        rows.append(dict(date=day,opening=before,movement=days[day],closing=balance))
+    return rows

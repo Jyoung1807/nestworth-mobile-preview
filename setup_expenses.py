@@ -50,8 +50,18 @@ def expense_editor(st,state,key,existing=None,suggestion=None,kind='expenses',ad
     account='';member='Household'
     with st.expander('Advanced details'):
         if allowance:
-            method=f('selectbox','Weekly allocation','allocation_method',defaults.get('allocation_method','calendar' if existing and defaults.get('allowance') else 'consistent'),options=['consistent','calendar'],format_func=lambda x:'Consistent weekly allowance' if x=='consistent' else 'Calendar-day allocation',help='Consistent: annual budget ÷ 52 for regular weeks; the final period receives the remaining annual allocation. Calendar-day: monthly amounts spread over actual days.')
+            if state['draft'].get('end_exclusive'):
+                method='cycle_days_v1'
+                st.caption('Cycle-day allocation · each allowance follows its actual frequency and start date. Partial cycles use their actual days; no annual scaling or final-week remainder.')
+            else:
+                method=f('selectbox','Weekly allocation','allocation_method',defaults.get('allocation_method','calendar' if existing and defaults.get('allowance') else 'consistent'),options=['consistent','calendar'],format_func=lambda x:'Consistent weekly allowance' if x=='consistent' else 'Calendar-day allocation',help='Consistent: annual budget ÷ 52 for regular weeks; the final period receives the remaining annual allocation. Calendar-day: monthly amounts spread over actual days.')
         if kind=='expenses':
+            from contingency_policy import PURPOSES
+            inferred=next((p for p in PURPOSES if p.casefold() in (str(defaults.get('name','')).casefold(),str(defaults.get('category','')).casefold())),'Normal household spending')
+            purpose_options=PURPOSES[:4]
+            existing_purpose=defaults.get('spending_purpose',inferred)
+            if existing_purpose not in purpose_options:purpose_options=[*purpose_options,existing_purpose]
+            purpose=f('selectbox','Spending purpose','spending_purpose',existing_purpose,options=purpose_options)
             account=f('text_input','Payment account (optional)','account',defaults.get('account','')) if not allowance else ''
             member=f('selectbox','Household member (optional)','member',defaults.get('member','Household'),options=['Household','Person A','Person B']) if allowance else 'Household'
             sub=f('text_input','Subcategory (optional)','sub',sub)
@@ -64,6 +74,7 @@ def expense_editor(st,state,key,existing=None,suggestion=None,kind='expenses',ad
         try:
             if not name.strip() or amount<=0:raise ValueError('Enter a name and a positive payment amount.')
             entry=dict(existing or {},id=(existing or {}).get('id',uid()),name=name.strip(),amount=money(amount),frequency=frequency,first_payment=str(first),end_date=str(end) if end else None,category=category,subcategory=sub,estimated=estimated,allowance=allowance,account=account,member=member,source_id=(existing or {}).get('source_id') or (suggestion or {}).get('id'))
+            if kind=='expenses':entry['spending_purpose']=purpose
             if allowance:entry['allocation_method']=method
             if kind=='expenses':tag(state,entry)
             candidate=deepcopy(state['draft']);candidate[kind]=[e for e in candidate[kind] if e['id']!=entry['id']]+[entry]

@@ -3,6 +3,7 @@
 Transactions are immutable source observations. Coverage is explicit and synthetic.
 Recovery reductions are forecasts until their destination period is closed.
 """
+from budget_period import BudgetPeriod,period_end,month_starts
 from copy import deepcopy
 from datetime import date, timedelta
 from decimal import Decimal
@@ -13,8 +14,8 @@ from household_calendar import week_bounds
 ZERO=Decimal('0.00')
 
 
-def window(start, when, period='Weekly'):
-    end=add_months(start,12)
+def window(start, when, period='Weekly',end=None):
+    end=end or add_months(start,12)
     if not start<=when<end: raise ValueError('Choose a date in the budget year')
     if period=='Weekly':return week_bounds(when)
     left=when.replace(day=1)
@@ -89,14 +90,15 @@ def dated_allocations(events):
     return result
 
 
-def tracker(events, transactions, start, when, period='Weekly', covered=False,as_of=None):
-    left,right=window(start,when,period)
-    end=add_months(start,12)
+def tracker(events, transactions, start, when, period='Weekly', covered=False,as_of=None,end=None):
+    end=end or add_months(start,12)
+    left,right=window(start,when,period,end=end)
     events=[e for e in dated_allocations(events) if start<=e['date']<end]
-    transactions=[t for t in transactions if start<=date.fromisoformat(t['date'])<end]
+    from observations import effective
+    transactions=[t for t in effective(transactions) if start<=date.fromisoformat(t['date'])<end]
     as_of=as_of or when
     categories={e['category'] for e in events if e['kind']=='expense' and left<=e['date']<right}
-    categories.update(t['category'] for t in transactions if left<=date.fromisoformat(t['date'])<right)
+    categories.update(t.get('category') or 'Uncategorised' for t in transactions if left<=date.fromisoformat(t['date'])<right)
     rows=[]
     for category in sorted(categories):
         matching=[e for e in events if e['kind']=='expense' and category_id(e['category'])==category_id(category) and left<=e['date']<right]
@@ -108,7 +110,7 @@ def tracker(events, transactions, start, when, period='Weekly', covered=False,as
                 span=max(1,(right-e['date']).days)
                 expected+=e['amount']*Decimal(min(span,max(0,(as_of-e['date']).days+1)))/span
             elif e['date']<=as_of:expected+=e['amount']
-        spent=sum((money(t['amount']) for t in transactions if category_id(t['category'])==category_id(category) and left<=date.fromisoformat(t['date'])<right and date.fromisoformat(t['date'])<=as_of),ZERO) if covered else None
+        spent=sum((money(t['amount']) for t in transactions if category_id(t.get('category') or 'Uncategorised')==category_id(category) and left<=date.fromisoformat(t['date'])<right and date.fromisoformat(t['date'])<=as_of),ZERO) if covered else None
         closed=as_of>=right-timedelta(days=1)
         status='No statement coverage'
         if spent is not None:
@@ -125,16 +127,16 @@ def observed_events(events,state):
     is counted as a new expense on top of its matched allocation.
     """
     rows=deepcopy(events)
-    transactions=state.get('period_transactions',[])
+    transactions=current_observations(state)
     for coverage in state.get('coverage',[]):
         left=date.fromisoformat(coverage['start']);right=date.fromisoformat(coverage['end'])
         as_of=date.fromisoformat(state['tracking_date'])
         cats={e['category'] for e in rows if e['kind']=='expense' and left<=e['date']<right}
-        cats.update(t['category'] for t in transactions if left<=date.fromisoformat(t['date'])<right)
+        cats.update(t.get('category') or 'Uncategorised' for t in transactions if left<=date.fromisoformat(t['date'])<right)
         for category in cats:
             matches=[e for e in rows if e['kind']=='expense' and category_id(e['category'])==category_id(category) and left<=e['date']<right]
             forecast=sum((e['amount'] for e in matches),ZERO)
-            actual=sum((money(t['amount']) for t in transactions if category_id(t['category'])==category_id(category) and left<=date.fromisoformat(t['date'])<right and date.fromisoformat(t['date'])<=as_of),ZERO)
+            actual=sum((money(t['amount']) for t in transactions if category_id(t.get('category') or 'Uncategorised')==category_id(category) and left<=date.fromisoformat(t['date'])<right and date.fromisoformat(t['date'])<=as_of),ZERO)
             delta=actual-forecast if as_of>=right-timedelta(days=1) else max(ZERO,actual-forecast)
             if delta:
                 # Signed reconciliation adjustment, not a second transaction.
@@ -145,7 +147,7 @@ def observed_events(events,state):
 def recovery_status(state,commitment,base_events):
     def period(record):
         if record.get('reductions') is not None:
-            return date.fromisoformat(record.get('period_start',record['effective'])),min(date.fromisoformat(record.get('period_end',record['end'])),add_months(date.fromisoformat(state['draft']['start']),12))
+            return date.fromisoformat(record.get('period_start',record['effective'])),min(date.fromisoformat(record.get('period_end',record['end'])),period_end(state))
         return date.fromisoformat(record['effective']),date.fromisoformat(record['end'])
     left,right=period(commitment)
     as_of=date.fromisoformat(state['tracking_date'])
@@ -153,7 +155,7 @@ def recovery_status(state,commitment,base_events):
     recovered=ZERO
     if covered and as_of>=right-timedelta(days=1):
         baseline=sum((e['amount'] for e in base_events if e['kind']=='expense' and category_id(e['category'])==category_id(commitment['category']) and left<=e['date']<right),ZERO)
-        spent=sum((money(t['amount']) for t in state.get('period_transactions',[]) if category_id(t['category'])==category_id(commitment['category']) and left<=date.fromisoformat(t['date'])<right),ZERO)
+        spent=sum((money(t['amount']) for t in current_observations(state) if category_id(t.get('category') or 'Uncategorised')==category_id(commitment['category']) and left<=date.fromisoformat(t['date'])<right),ZERO)
         earlier=sum((money(r['amount']) for r in state.get('recoveries',[])[:state.get('recoveries',[]).index(commitment)] if r['category']==commitment['category'] and period(r)==(left,right)),ZERO)
         recovered=min(money(commitment['amount']),max(ZERO,baseline-spent-earlier))
     return dict(recovered=recovered,remaining=money(commitment['amount'])-recovered,status='Achieved' if recovered==money(commitment['amount']) else 'Unfulfilled' if covered and as_of>=right-timedelta(days=1) else 'Pending · not confirmed savings')
@@ -163,7 +165,7 @@ def save_revision(state,revision):
     from planning import result, summarize
     if not state['versions']:raise ValueError('Approve a budget first')
     start=date.fromisoformat(state['draft']['start']);day=date.fromisoformat(revision['effective'])
-    if not max(start,date.fromisoformat(state.get('tracking_date',str(start))))<=day<add_months(start,12):raise ValueError('Effective date must be in the remaining forecast year')
+    if not max(start,date.fromisoformat(state.get('tracking_date',str(start))))<=day<period_end(state):raise ValueError('Effective date must be in the remaining forecast year')
     if revision['scope']=='category' and revision['mode']!='percentage':raise ValueError('Category revisions use a percentage')
     if revision['mode']=='percentage':
         if not Decimal(str(revision['value'])).is_finite() or Decimal(str(revision['value'])) < -100:raise ValueError('Invalid percentage')
@@ -210,7 +212,7 @@ def save_revision(state,revision):
     before=result(state)[0];candidate=deepcopy(state);candidate.setdefault('revisions',[]).append(deepcopy(revision))
     after=result(candidate)[0]
     state['revisions']=candidate['revisions']
-    state.setdefault('forecast_history',[]).append(dict(type='Revision',decision=deepcopy(revision),before=summarize(before,start),after=summarize(after,start)))
+    state.setdefault('forecast_history',[]).append(dict(type='Revision',decision=deepcopy(revision),before=summarize(before,start,end=period_end(state)),after=summarize(after,start,end=period_end(state))))
 
 
 
@@ -222,7 +224,7 @@ def recovery_source(state,category,left,right):
     source. Recovery cannot exceed the excess actually included in the forecast.
     """
     from planning import result
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     left=max(start,left);right=min(end,right)
     coverage=next((c for c in state.get('coverage',[]) if date.fromisoformat(c['start'])<=left and date.fromisoformat(c['end'])>=right),None)
     if coverage:left=date.fromisoformat(coverage['start']);right=date.fromisoformat(coverage['end'])
@@ -230,7 +232,7 @@ def recovery_source(state,category,left,right):
     events=result(base,accounting=False)[0]
     allocation=sum((e['amount'] for e in events if e['kind']=='expense' and category_id(e['category'])==category_id(category) and left<=e['date']<right),ZERO)
     as_of=date.fromisoformat(state['tracking_date'])
-    spent=sum((money(t['amount']) for t in state.get('period_transactions',[]) if category_id(t['category'])==category_id(category) and left<=date.fromisoformat(t['date'])<right and date.fromisoformat(t['date'])<=as_of),ZERO)
+    spent=sum((money(t['amount']) for t in current_observations(state) if category_id(t.get('category') or 'Uncategorised')==category_id(category) and left<=date.fromisoformat(t['date'])<right and date.fromisoformat(t['date'])<=as_of),ZERO)
     return str(left)+':'+str(right)+':'+category,max(ZERO,spent-allocation)
 
 def recovery_eligibility(state,events,category,left,right):
@@ -240,7 +242,7 @@ def recovery_eligibility(state,events,category,left,right):
     Exclude past/today, paid events, out-of-horizon events and conflicting windows.
     `events` already includes existing commitments, so capacity cannot be reused.
     """
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     as_of=date.fromisoformat(state['tracking_date'])
     effective=max(start,left,as_of+timedelta(days=1));boundary=min(end,right)
     reason=''
@@ -255,7 +257,7 @@ def recovery_eligibility(state,events,category,left,right):
     # allocation events have not occurred. Reserve that consumption first.
     for coverage in state.get('coverage',[]):
         a=date.fromisoformat(coverage['start']);b=date.fromisoformat(coverage['end'])
-        spent=sum((money(t['amount']) for t in state.get('period_transactions',[]) if category_id(t['category'])==category_id(category) and a<=date.fromisoformat(t['date'])<b and date.fromisoformat(t['date'])<=as_of),ZERO)
+        spent=sum((money(t['amount']) for t in current_observations(state) if category_id(t.get('category') or 'Uncategorised')==category_id(category) and a<=date.fromisoformat(t['date'])<b and date.fromisoformat(t['date'])<=as_of),ZERO)
         dated=sum((e['amount'] for e in events if e['kind']=='expense' and category_id(e['category'])==category_id(category) and a<=e['date']<b and e['date']<=as_of),ZERO)
         consumed=max(ZERO,spent-dated)
         future_in_coverage=sorted((e for e in events if e['kind']=='expense' and category_id(e['category'])==category_id(category) and as_of<e['date']<b and e['date']>=a and not e['paid'] and e['amount']>0),key=lambda e:(e['date'],e['id']))
@@ -287,11 +289,12 @@ def commit_recovery(state,source,category,left,right,amount):
 
 
 def simulate_period(state,events,when,period,category,variance):
-    start=date.fromisoformat(state['draft']['start']);left,right=window(start,when,period)
+    start=date.fromisoformat(state['draft']['start']);left,right=window(start,when,period,end=period_end(state))
+    if state['draft'].get('end_exclusive'):left=max(start,left);right=min(period_end(state),right)
     for c in state.get('coverage',[]):
         a=date.fromisoformat(c['start']);b=date.fromisoformat(c['end'])
         if a<right and b>left and (a!=left or b!=right):raise ValueError('This period overlaps existing coverage. Use the same weekly or monthly boundaries to avoid duplicate observations.')
-    rows=tracker(events,[],start,when,period)
+    rows=tracker(events,[],start,when,period,end=period_end(state))
     transactions=[]
     for row in rows:
         amount=row['allocation']+(Decimal(str(variance)) if row['category']==category else ZERO)
@@ -326,9 +329,11 @@ def reverse_latest_revision(state):
     if date.fromisoformat(latest['effective'])<today:raise ValueError('This amendment already affects elapsed periods. Make a new prospective amendment instead.')
     ids={r['id'] for r in latest.get('schedule_events',[])}
     if any(a['payment_id'] in ids for a in state.get('actuals',[])):raise ValueError('Recorded payments protect this amendment. Make a prospective change instead.')
-    start=date.fromisoformat(state['draft']['start']);before=summarize(result(state)[0],start)
+    start=date.fromisoformat(state['draft']['start']);before=summarize(result(state)[0],start,end=period_end(state))
     candidate=deepcopy(state);candidate['revisions'].pop()
-    try:after=summarize(result(candidate)[0],start)
+    try:after=summarize(result(candidate)[0],start,end=period_end(state))
     except (ValueError,KeyError) as error:raise ValueError('Later funding depends on this amendment. Review that funding first.') from error
     state['revisions']=candidate['revisions']
     state.setdefault('forecast_history',[]).append(dict(type='Reversed revision',date=str(today),decision=deepcopy(latest),before=before,after=after))
+
+from observations import current as current_observations

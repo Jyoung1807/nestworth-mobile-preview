@@ -9,15 +9,17 @@ from finance import add_months
 from planning import aggregate
 
 
-def category_frame(events,start):
-    end=add_months(start,12)
+def category_frame(events,start,end=None):
+    explicit=end is not None;end=end or add_months(start,12)
     values={}
     for e in events:
         if e['kind']!='expense' or not start<=e['date']<end: continue
         key=(e['date'].replace(day=1).isoformat(),category_id(e['category']),e['category'])
         values[key]=values.get(key,Decimal(0))+e['amount']
     for category in {key[2] for key in list(values)}:
-        for n in range(12): values.setdefault((add_months(start,n).isoformat(),category_id(category),category),Decimal(0))
+        cursor=start.replace(day=1) if explicit else start
+        while cursor<end:
+            values.setdefault((cursor.isoformat(),category_id(category),category),Decimal(0));cursor=add_months(cursor,1)
     return pd.DataFrame([{'month':m,'category_id':id,'category':c,'amount':float(v)} for (m,id,c),v in values.items()],columns=['month','category_id','category','amount'])
 
 
@@ -26,8 +28,8 @@ def category_scale(names):
     return alt.Scale(domain=names,range=[color_for(name) for name in names])
 
 
-def spending_charts(st,events,start,key,drill=True):
-    df=category_frame(events,start)
+def spending_charts(st,events,start,key,drill=True,end=None):
+    df=category_frame(events,start,end)
     if df.empty:
         st.info('Your category charts will appear when you add expenses or plans.'); return
     st.subheader('Where your money goes each month')
@@ -62,9 +64,9 @@ def spending_charts(st,events,start,key,drill=True):
             responsive_table(st,pd.DataFrame(rows),hide_index=True,width='stretch')
 
 
-def cumulative_rows(forecast,budget,start,goal,budget_label="Original budget",period="Monthly"):
-    forecast_rows=aggregate(forecast,start,period)
-    budget_rows=aggregate(budget,start,period) if budget is not None else None
+def cumulative_rows(forecast,budget,start,goal,budget_label="Original budget",period="Monthly",end=None):
+    forecast_rows=aggregate(forecast,start,period,end=end)
+    budget_rows=aggregate(budget,start,period,end=end) if budget is not None else None
     total_f=Decimal(0); total_b=Decimal(0); result=[]
     for i,row in enumerate(forecast_rows):
         total_f+=row['savings']
@@ -76,9 +78,9 @@ def cumulative_rows(forecast,budget,start,goal,budget_label="Original budget",pe
     return result
 
 
-def savings_chart(st,events,original,start,goal,budget_label="Original budget",height=280,period="Monthly"):
+def savings_chart(st,events,original,start,goal,budget_label="Original budget",height=280,period="Monthly",end=None):
     st.subheader('Watch your savings build')
-    rows=cumulative_rows(events,original,start,goal,budget_label,period)
+    rows=cumulative_rows(events,original,start,goal,budget_label,period,end)
     chart=alt.Chart(pd.DataFrame(rows)).mark_line(point=True).encode(
         x=alt.X('month:T',title=None,axis=alt.Axis(format='%b' if period=='Monthly' else '%d %b',tickCount=6,labelOverlap='greedy')),y=alt.Y('savings:Q',title='Savings ($)'),
         color=alt.Color('series:N',scale=alt.Scale(domain=['Latest forecast',budget_label],range=['#258C80','#6676D6']),title=None,legend=alt.Legend(orient='bottom',direction='vertical',labelLimit=260)),

@@ -72,7 +72,7 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
     data,key=demo_state(st.session_state,user_id,household_id)
     if 'planner' not in data:data['planner']=new_planner(date.fromisoformat(data['start']),data['income'],data['expenses'])
     if data.get('_fixture_version'):
-        st.info('DEMO MODE · Fictional household · Scenario date 19 Nov 2026 · Session only')
+        st.markdown('<div class="nw-demo-banner">DEMO MODE · Fictional · Scenario date 19 Nov 2026</div>',unsafe_allow_html=True)
     state=data['planner'];state.setdefault('tracking_date',state['draft']['start'])
     from category_catalog import sync
     sync(state,data['transactions']);state['spending']=data['transactions'];setup=setup_state(state)
@@ -89,7 +89,7 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
         state['action_list_view']=action_focus;st.session_state[key+':actions:list']=action_focus
     elif current=='Actions' and previous_route!='Actions' and count and not state.get('action_workflow'):
         state['action_list_view']='Needs attention';st.session_state[key+':actions:list']='Needs attention'
-    labels={'Home':'Home','Setup':'Build Your Budget','Spending':'Transactions','Outlook':'Adjust Forecast','Actions':'To Do','Settings':'Settings'}
+    labels={'Home':'Home','Setup':'Build Your Budget','Spending':'Transactions','Outlook':'Adjust Forecast','Actions':('To Do · '+str(count) if count else 'To Do'),'Settings':'Settings'}
     st.sidebar.caption('YOUR HOUSEHOLD')
     page=st.sidebar.radio('Workspace',ROUTES,format_func=labels.get,key=nav_key)
     with st.sidebar.expander('Demo / testing controls'):
@@ -110,7 +110,7 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
     active_step=setup['step'] if setup.get('step_next') else st.session_state.get(key+':setup:step',setup['step'])
     active_topic=setup.get('household_section','People') if setup.get('household_next') else st.session_state.get(key+':setup:household:section',setup.get('household_section','People'))
     navigation_layout(st,page+(':'+active_step+':'+active_topic+':'+str(state.get('expense_workflow',{}).get('nav_epoch',0))+':'+str(setup.get('journey_epoch',0)) if page=='Setup' else ''))
-    st.caption('SYNTHETIC DEMO · Fictional · Session only')
+    if not data.get('_fixture_version'):st.caption('SYNTHETIC DEMO · Fictional · Session only')
     focus=state.pop('page_focus',None)
     if focus:
         if page=='Setup':
@@ -118,7 +118,7 @@ def _render_household_model(st,user_id,household_id,household_name,account_rende
             if focus.get('project_id'):state['plan_focus']=focus['project_id']
         elif page=='Spending':state['spending_focus']=focus
         elif page=='Outlook':state['outlook_focus']=focus;st.session_state[key+':year:view']='Summary'
-    if data.get('_test_only'):st.caption(data['test_name']+(' · populated fictional test household' if data.get('_fixture_version') else ' · empty-start fictional test household')+' · session only')
+    if data.get('_test_only') and not data.get('_fixture_version'):st.caption(data['test_name']+(' · populated fictional test household' if data.get('_fixture_version') else ' · empty-start fictional test household')+' · session only')
     from quick_actions import shortcut,render as render_quick_expense
     quick=shortcut(st,state,key,page) if state['versions'] and page in ('Home','Outlook','Spending') else False
     if quick:

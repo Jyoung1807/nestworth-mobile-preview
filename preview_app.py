@@ -11,9 +11,9 @@ from demo_ui import render_demo
 
 st.set_page_config(page_title='Nestworth · Fictional mobile preview',page_icon='⌂',layout='wide')
 styles(st);brand(st)
-st.caption('ISOLATED TEST APP · Fictional data only · No Supabase connection · Session only')
+st.sidebar.caption('ISOLATED TEST APP · Fictional · No Supabase connection · Session only')
 base='demo:preview-session:fictional-household'
-if not st.session_state.get('preview_started'):
-    load_demo(st.session_state,base);st.session_state['preview_started']=True
+if st.session_state.get('preview_publication')!='8e479d4-uat-2026-11-23':
+    load_demo(st.session_state,base);st.session_state['preview_publication']='8e479d4-uat-2026-11-23'
 identity=SimpleNamespace(auth=SimpleNamespace(get_user=lambda:SimpleNamespace(user=SimpleNamespace(id='preview-session'))))
 render_demo(st,identity,'fictional-household','Nora & Sam · Fictional preview')

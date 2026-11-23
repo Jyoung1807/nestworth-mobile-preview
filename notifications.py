@@ -1,6 +1,7 @@
 """Urgent financial decisions are distinct from routine setup reminders."""
 def decision_count(actions):
-    return sum(a['status']=='Needs decision' and (a['type']=='overspend' or a.get('id')=='cash') for a in actions)
+    from proactive_alerts import needs_decision
+    return sum(needs_decision(a) for a in actions)
 
 
 def financial_alerts(st,state,key,actions=None):

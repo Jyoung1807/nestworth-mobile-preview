@@ -1,7 +1,7 @@
 """Deterministic fictional household factory. No clients, credentials or persistence.
 
-First safe slice: existing outgoing/forecast models only. Incoming-ledger and new
-reserve policies must be added through their approved services, never faked here.
+Fictional UAT seed over the approved 4.8 services. Opening savings is explicitly
+$12,000 within $18,000 opening cash. No bank balance or real household is inferred.
 """
 from datetime import date
 from decimal import Decimal
@@ -11,7 +11,7 @@ from setup_model import setup_state,approve_setup,requirements
 from category_catalog import sync
 from accountability import simulate_period
 
-VERSION='nestworth-uat-1'
+VERSION='nestworth-uat-48-8e479d4'
 SCENARIO_DATE=date(2026,11,19)
 
 
@@ -34,7 +34,7 @@ def populated_household():
            ('Lily birthday celebration','Other',180,'Annual','2027-03-10',False)]
     expenses=[dict(name=n,category=c,amount=a,frequency=f,first_payment=d,allowance=flex,
                    **({'allocation_method':'consistent'} if flex else {})) for n,c,a,f,d,flex in specs]
-    state=new_planner(start,income,expenses)
+    state=new_planner(start,income,expenses,end_exclusive=date(2027,11,1))
     # Stable fixture IDs make canonical resets auditable (new_planner normally
     # generates IDs for user-created entries). No existing record is rewritten.
     for collection in ('income','expenses'):
@@ -43,7 +43,8 @@ def populated_household():
         children=[dict(id='child:0',name='Lily',age=8),dict(id='child:1',name='Theo',age=4)],
         pets=[dict(id='pet:0',name='Milo',type='Dog')],cars=1,
         vehicles=[dict(id='cars:0',name='Family car',type='Car',finance=False)],timezone='Australia/Brisbane')
-    state['draft'].update(opening_cash=18000,goal=15000)
+    state['draft'].update(opening_cash=18000,opening_savings=12000,goal=0,
+        target=dict(kind='total_savings',amount=40000))
     state['draft']['projects']=[dict(id='fictional:holiday',name='Family holiday',category='Leisure',total=2400,status='Active',payments=[
         dict(id='deposit',date='2027-01-15',amount=600,description='Deposit',precision='Exact date'),
         dict(id='balance',date='2027-03-15',amount=1800,description='Balance',precision='Exact date')])]

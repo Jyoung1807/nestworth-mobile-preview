@@ -1,4 +1,5 @@
 """Categorise, exclude and compare without duplicating the draft budget."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from mobile_ui import responsive_table
 from datetime import date
 import hashlib
@@ -105,7 +106,7 @@ def review_spending(st,state,transactions,key,setup_review=False):
 
 
 def compare_and_finalise(st,state,transactions,key):
-    start=date.fromisoformat(state['draft']['start']);events,_=result(state);summary=summarize(events,start)
+    start=date.fromisoformat(state['draft']['start']);events,_=result(state);summary=summarize(events,start,end=period_end(state))
     totals=historical_totals(transactions,start)
     st.metric('Projected annual savings',dollars(summary['savings']))
     st.caption('Excluded historical one-offs: '+dollars(totals['excluded']))
@@ -179,7 +180,7 @@ def compare_and_finalise(st,state,transactions,key):
         else:state['budget_complete']=True;st.session_state[state['_nav_key']+':next']='Dashboard';st.rerun()
     with st.expander('Monthly category charts, payment calendar and locked budget history'):
         from dashboard_charts import spending_charts
-        spending_charts(st,events,start,key+':details')
+        spending_charts(st,events,start,key+':details',end=period_end(state))
         responsive_table(st,pd.DataFrame(events).drop(columns=['id','item_id','project_id'],errors='ignore'),hide_index=True,width='stretch')
         for version in state['versions']:
             st.write(f"Version {version['number']} · approved savings {dollars(version.get('savings_baseline',version['summary']['savings']))} · original snapshot retained")

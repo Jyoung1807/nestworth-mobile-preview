@@ -1,4 +1,5 @@
 """Seven-step Budget Builder over the existing financial and approval services."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from copy import deepcopy
 from datetime import date
 from setup_model import STEPS,setup_state,requirements,approve_setup
@@ -77,35 +78,69 @@ def assumptions(st,state,key):
     setup=setup_state(state);scope='reserve-policy'
     dirty=state.get('setup_buffers',{}).get(scope,{}).get('_dirty')
     if setup['reserve_reviewed'] and not dirty:
-        st.caption('Contingency '+str(state['draft']['contingency_pct'])+'% · '+('Savings goal $'+f"{state['draft']['goal']:,.2f}" if state['draft']['goal'] else 'No savings goal set'))
+        from contingency_ui import label
+        st.caption('Contingency · '+label(state)+' · '+('Savings goal $'+f"{state['draft']['goal']:,.2f}" if state['draft']['goal'] else 'No savings goal set'))
         if st.button('Edit budget assumptions',key=key+':edit'):setup['reserve_reviewed']=False;st.rerun()
         return True
     st.markdown('**Budget assumptions**')
-    percent=field(st,state,scope,STEPS[4],'number_input','Contingency reserve (%)','percent',int(state['draft']['contingency_pct']),min_value=0,max_value=50)
+    from contingency_ui import inputs,current_policy
+    def reserve_field(kind,label,name,default,**kwargs):return field(st,state,scope,STEPS[4],kind,label,name,default,**kwargs)
+    policy,legacy_percent=inputs(st,state,key+':reserve',reserve_field)
     goal=field(st,state,scope,STEPS[4],'number_input','Savings aspiration (optional $)','goal',float(state['draft']['goal']) if state['draft']['goal'] else None,min_value=0.0,step=100.0)
     known=setup.get('opening_cash_known',state['draft']['opening_cash']>0)
     cash=field(st,state,scope,STEPS[4],'number_input','Opening cash (optional $)','cash',float(state['draft']['opening_cash']) if known else None,min_value=0.0,step=100.0)
-    st.caption('Contingency comes from positive monthly surplus. Savings are this year’s result; opening cash is money already available. Leave optional amounts blank when unknown or not needed.')
+    st.caption('Opening cash is money already available. Leave unknown balances blank; contingency earmarking never creates another expense.')
+    opening_savings=field(st,state,scope,STEPS[4],'number_input','Identified opening savings (optional $)','opening_savings',float(state['draft']['opening_savings']) if state['draft'].get('opening_savings') is not None else None,min_value=0.0,step=100.0)
+    st.caption('Savings is an explicit planning pot, separate from general cash. Do not add it to opening cash again if cash already includes these funds. Leave unknown balances blank.')
+    target_options={'No target':None,'Additional savings this period':'additional_savings','Total savings at period end':'total_savings','Closing cash at period end':'closing_cash'}
+    current_target=state['draft'].get('target') or {}
+    target_label=next((label for label,kind in target_options.items() if kind==current_target.get('kind')),'No target')
+    target_kind=field(st,state,scope,STEPS[4],'radio','Period-end target','target_kind',target_label,options=list(target_options))
+    target_amount=field(st,state,scope,STEPS[4],'number_input','Target amount ($)','target_amount',float(current_target.get('amount',0)),min_value=0.0,step=100.0) if target_options[target_kind] else None
     saved(st,state,scope);discard(st,state,scope)
     if st.button('Save & Continue',type='primary',key=key+':apply'):
         try:
-            candidate=deepcopy(state['draft']);candidate.update(contingency_pct=percent,goal=money(goal or 0),opening_cash=money(cash or 0))
-            replace_draft(state,candidate);applied(state,scope);setup.update(reserve_reviewed=True,opening_cash_known=cash is not None);st.rerun()
+            candidate=deepcopy(state['draft']);candidate.update(goal=money(goal or 0),opening_cash=money(cash or 0))
+            if legacy_percent is not None:candidate['contingency_pct']=legacy_percent
+            if not state['versions'] and policy is not None:candidate['contingency_policy']=policy
+            if opening_savings is not None:candidate['opening_savings']=money(opening_savings)
+            else:candidate.pop('opening_savings',None)
+            if target_options[target_kind]:
+                if target_options[target_kind]=='total_savings' and opening_savings is None:raise ValueError('Identify opening savings before setting a total-savings target.')
+                if target_options[target_kind]=='closing_cash' and cash is None:raise ValueError('Enter opening cash before setting a closing-cash target.')
+                candidate['target']=dict(kind=target_options[target_kind],amount=money(target_amount))
+            else:candidate.pop('target',None)
+            proposed=deepcopy(state);replace_draft(proposed,candidate)
+            if state['versions'] and policy is not None and policy!=current_policy(state):
+                from contingency_policy import save_change
+                save_change(proposed,policy)
+            state.update(proposed);setup=state['setup'];applied(state,scope);setup.update(reserve_reviewed=True,opening_cash_known=cash is not None);st.rerun()
         except ValueError as error:st.error(str(error))
     return False
 
 
 def approval(st,state,key):
     setup=setup_state(state);transactions=state.get('spending',[]);start=date.fromisoformat(state['draft']['start'])
-    events=result(state)[0];summary=summarize(events,start)
-    planned=sum((e['amount'] for e in events if e['kind']=='expense' and e.get('project_id') and start<=e['date']<add_months(start,12)),money(0))
+    events=result(state)[0];summary=summarize(events,start,end=period_end(state))
+    from savings_projection import project
+    savings=project(state['draft'],summary)
+    if savings['total'] is not None:
+        st.metric('Projected total savings at period end','$'+f"{savings['total']:,.2f}",delta='+'+f"{savings['additional']:,.2f}"+' this budget period',delta_color='off')
+        st.caption('Identified opening savings $'+f"{savings['opening']:,.2f}"+' · earmarked reserve $'+f"{savings['reserve']:,.2f}"+' · unallocated total $'+f"{savings['unallocated']:,.2f}")
+    planned=sum((e['amount'] for e in events if e['kind']=='expense' and e.get('project_id') and start<=e['date']<period_end(state)),money(0))
     with st.container(border=True):
-        for label,value in [('Annual net household income',summary['income']),('Annual regular expenses',summary['expenses']-planned),('Planned expenses',planned),('Contingency reserve',summary['contingency']),('Unallocated annual savings (after reserve)',summary['savings'])]:st.write(label+' · **$'+f'{value:,.2f}'+'**')
+        for label,value in [('Budget-period net household income',summary['income']),('Budget-period regular expenses',summary['expenses']-planned),('Planned expenses',planned),('Contingency reserve',summary['contingency']),('Additional unallocated savings (after reserve)',summary['savings'])]:st.write(label+' · **$'+f'{value:,.2f}'+'**')
     if setup.get('opening_cash_known',state['draft']['opening_cash']>0):
-        cash=aggregate(events,start,'Monthly',state['draft']['opening_cash'])
+        cash=aggregate(events,start,'Monthly',state['draft']['opening_cash'],end=period_end(state))
         for label,value in [('Opening cash',money(state['draft']['opening_cash'])),('Projected closing cash',cash[-1]['closing_cash']),('Lowest projected cash',min(r['lowest_cash'] for r in cash))]:st.write(label+' · **$'+f'{value:,.2f}'+'**')
         st.caption('Scenario cash projection, not a verified bank balance. Cash includes opening funds; annual savings is a separate result.')
     else:st.caption('Cash position unknown · add opening cash to see cash projections. Annual savings is not your bank balance.')
+    target_projection=project(state['draft'],summary,cash[-1]['closing_cash'] if setup.get('opening_cash_known',state['draft']['opening_cash']>0) else None)['target']
+    if target_projection:
+        labels={'additional_savings':'Additional savings','total_savings':'Total savings balance','closing_cash':'Closing cash balance'}
+        st.write(labels[target_projection['kind']]+' target · **$'+f"{target_projection['amount']:,.2f}"+'**')
+        if target_projection['projected'] is None:st.caption('Outcome unknown until the relevant opening balance is identified.')
+        else:st.caption('Projected outcome $'+f"{target_projection['projected']:,.2f}"+' · '+('$'+f"{abs(target_projection['variance']):,.2f}"+(' surplus' if target_projection['variance']>=0 else ' shortfall'))+' · not realised savings')
     if not assumptions(st,state,key+':assumptions'):return
     if setup['history_choice']=='declined':
         def declined():

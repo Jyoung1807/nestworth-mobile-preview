@@ -1,4 +1,5 @@
 """Presentation data from the shared dated engine; no second allocation formula."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from datetime import date
 from decimal import Decimal
 from accountability import tracker,window
@@ -9,14 +10,14 @@ ZERO=Decimal('0.00')
 
 
 def spending_view(state,events,when,period='Weekly'):
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
-    left,right=window(start,when,period);today=date.fromisoformat(state['tracking_date'])
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
+    left,right=window(start,when,period,end=period_end(state));today=date.fromisoformat(state['tracking_date'])
     covered=any(date.fromisoformat(c['start'])<=max(start,left) and date.fromisoformat(c['end'])>=min(end,right) for c in state.get('coverage',[]))
-    transactions=[t for t in state.get('period_transactions',[]) if max(start,left)<=date.fromisoformat(t['date'])<min(end,right) and date.fromisoformat(t['date'])<=today]
+    transactions=[t for t in current_observations(state) if max(start,left)<=date.fromisoformat(t['date'])<min(end,right) and date.fromisoformat(t['date'])<=today]
     expenses=[e for e in events if e['kind']=='expense' and max(start,left)<=e['date']<min(end,right)]
     bills=sorted((e for e in expenses if not e.get('allowance')),key=lambda e:(e['date'],e['id']))
     flexible=[e for e in events if e.get('allowance') and e['kind']=='expense']
-    rows=tracker(flexible,transactions,start,when,period,True,as_of=today)
+    rows=tracker(flexible,transactions,start,when,period,True,as_of=today,end=period_end(state))
     flexible_categories={category_id(e['category']) for e in flexible if left<=e['date']<right}
     rows=[r for r in rows if category_id(r['category']) in flexible_categories]
     for row in rows:
@@ -36,3 +37,5 @@ def spending_view(state,events,when,period='Weekly'):
     # scheduled payment. Coverage remains the sole proof of a complete statement.
     recorded=sum((money(t['amount']) for t in transactions),ZERO) if covered or transactions else None
     return dict(left=left,right=right,covered=covered,transactions=transactions,allowances=rows,bills=bills,budget=total,recorded=recorded,remaining=total-recorded if covered else None)
+
+from observations import current as current_observations

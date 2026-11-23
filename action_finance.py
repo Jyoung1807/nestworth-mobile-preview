@@ -1,4 +1,5 @@
 """Session-only recovery decisions layered over the tested financial engine."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from collections import defaultdict
 from copy import deepcopy
 from datetime import date,timedelta
@@ -97,7 +98,7 @@ def record_category_recovery(state,source,category,left,right,amount,custom=None
     preview=distribution_preview(candidate,category,left,right,amount,custom,mode)
     if not preview['reductions']:raise ValueError('No eligible future spending is available.')
     record=dict(id=replace_id or uuid4().hex,source=source,category=category,amount=amount,
-                effective=min(r['date'] for r in preview['reductions']),end=str(min(add_months(date.fromisoformat(candidate['draft']['start']),12),right)),
+                effective=min(r['date'] for r in preview['reductions']),end=str(min(period_end(candidate),right)),
                 period_start=str(left),period_end=str(right),reductions=preview['reductions'],distribution=preview['weeks'],mode=mode,custom=deepcopy(custom))
     candidate.setdefault('recoveries',[]).append(record)
     result(candidate)  # Validate the exact resulting forecast before committing anything.
@@ -140,7 +141,7 @@ def plan_preview(state,source,project_id,action,amount=0,new_date=None,replace_i
     candidate=deepcopy(state)
     if replace_id:remove_pending(candidate,replace_id,record_history=False)
     if not candidate['versions']:raise ValueError('Approve a budget first.')
-    today=date.fromisoformat(candidate['tracking_date']);start=date.fromisoformat(candidate['draft']['start']);end=add_months(start,12)
+    today=date.fromisoformat(candidate['tracking_date']);start=date.fromisoformat(candidate['draft']['start']);end=period_end(state)
     before=result(candidate)[0]
     rows=sorted((e for e in result(candidate,accounting=False)[0] if e.get('project_id')==project_id and not e['paid'] and today<e['date']<end and e['amount']>0),key=lambda e:(e['date'],e['id']))
     if not rows:raise ValueError('This plan has no eligible future unpaid payments.')
@@ -162,7 +163,7 @@ def plan_preview(state,source,project_id,action,amount=0,new_date=None,replace_i
                 effective=str(rows[0]['date']),end=str(end),changes=changes,amount=ZERO,total=total)
     candidate.setdefault('plan_recoveries',[]).append(record)
     after=result(candidate)[0]
-    impact=summarize(after,start)['savings']-summarize(before,start)['savings']
+    impact=summarize(after,start,end=period_end(state))['savings']-summarize(before,start,end=period_end(state))['savings']
     record['impact']=impact;record['amount']=min(remaining_source(state,source)+(next((r['amount'] for r in state.get('plan_recoveries',[]) if record_id(r)==replace_id),ZERO)),max(ZERO,impact))
     return candidate,record,impact
 
@@ -185,7 +186,7 @@ def plan_recovery_status(state,record):
     ids={c['event_id'] for c in record['changes']}
     actuals=[a for a in state.get('actuals',[]) if a['payment_id'] in ids and date.fromisoformat(a['date'])<=today]
     complete={a['payment_id'] for a in actuals}==ids
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     spent=sum((money(a['amount']) for a in actuals if start<=date.fromisoformat(a['date'])<end),ZERO)
     recovered=min(money(record['amount']),max(ZERO,money(record['total'])-spent)) if complete else ZERO
     remaining=money(record['amount'])-recovered
@@ -201,7 +202,8 @@ def collect_actions(state):
     baseline=result(base,accounting=False)[0]
     for coverage in state.get('coverage',[]):
         left=date.fromisoformat(coverage['start']);right=date.fromisoformat(coverage['end'])
-        categories={t['category'] for t in state.get('period_transactions',[]) if left<=date.fromisoformat(t['date'])<right}
+        from budget_comparison import needs_category
+        categories={t['category'] for t in current_observations(state) if not needs_category(t) and left<=date.fromisoformat(t['date'])<right}
         for category in sorted(categories):
             source,amount=recovery_source(state,category,left,right)
             if not amount:continue
@@ -227,7 +229,14 @@ def collect_actions(state):
     if not state.get('profile_complete'):actions.append(dict(id='profile',type='review',category='Household',amount=ZERO,reason='Check your household details',status='Needs decision',next='Review household profile',page='Your Household'))
     if not state['versions']:actions.append(dict(id='approval',type='review',category='Budget',amount=ZERO,reason='Your budget is still a draft',status='Needs decision',next='Review and approve',page='Compare & Finalise'))
     events=result(state)[0]
-    if any(r['lowest_cash']<0 for r in aggregate(events,start,opening_cash=state['draft']['opening_cash'])):actions.append(dict(id='cash',type='review',category='Cash flow',amount=ZERO,reason='Projected cash cannot cover a dated payment',status='Needs decision',next='Review dated cash flow',page='Your Year Ahead'))
+    cash_known=state.get('setup',{}).get('opening_cash_known',state['draft']['opening_cash']>0)
+    if cash_known:
+        from planning import dated_cash
+        path=dated_cash(events,start,period_end(state),state['draft']['opening_cash'])
+        future=[r for r in path if r['date']>=today and min(r['opening'],r['closing'])<0]
+        if future:
+            deficit=-min(min(r['opening'],r['closing']) for r in future);first=future[0]['date']
+            actions.append(dict(id='cash',type='review',category='Cash flow',amount=deficit,reason='Projected cash shortfall from '+str(first)+'; not a verified bank balance.',status='Needs decision',next='Review dated cash flow',page='Your Year Ahead',period_start=str(first),period_end=str(first+timedelta(days=1))))
     upcoming=sorted((e for e in events if e.get('project_id') and not e['paid'] and e['amount']>0 and today<e['date']<=today+timedelta(days=30)),key=lambda e:(e['date'],e['id']))
     if state['versions'] and not state.get('plan_reviewed') and upcoming:
         event=upcoming[0]
@@ -245,6 +254,8 @@ def collect_actions(state):
             actions.append(dict(id='setup:'+step,type='review',category=step,amount=ZERO,reason=message,status='Setup reminder',next='Review '+step,page='Setup',setup_step=step))
         for action in actions:
             if action['type']=='review' and (action['id']!='cash' or not state['versions']):action['status']='Setup reminder'
+    from proactive_alerts import extras
+    actions.extend(extras(state,events,actions))
     return actions
 
 
@@ -295,3 +306,5 @@ def recovery_decision_preview(state,source,sources,replace_id=None,accept_remain
 def recovery_totals(actions):
     records=[a for a in actions if a['type'] in ('commitment','plan_commitment')]
     return dict(pending=sum((a['amount']-a.get('recovered',ZERO) for a in records if a['status'] in ('Recovery committed','Awaiting verification')),ZERO),verified=sum((a.get('recovered',ZERO) for a in records),ZERO))
+
+from observations import current as current_observations

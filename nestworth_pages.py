@@ -1,4 +1,5 @@
 """Page composition only. Existing household-scoped services remain authoritative."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from datetime import date,timedelta
 from nestworth_design import intro,empty
 
@@ -30,7 +31,7 @@ def simulator(st,state,key):
     from calendar_ui import week_selector
     from household_calendar import weeks_in_horizon,week_start
     from finance import add_months
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     today=date.fromisoformat(state.get('tracking_date',str(start)))
     notice=state.pop('simulation_notice',None)
     if notice:st.success(notice)
@@ -43,9 +44,9 @@ def simulator(st,state,key):
         period=st.radio('Simulator period',['Weekly','Monthly'],horizontal=True,key=key+':period')
         if period=='Weekly':when=max(start,week_selector(st,'Simulation week',weeks_in_horizon(start,end),key+':week',week_start(today)))
         else:
-            months=[add_months(start,n) for n in range(12)];when=st.selectbox('Simulation month',months,format_func=lambda d:d.strftime('%B %Y'),key=key+':month')
-        left,right=window(start,when,period);events=result(state,accounting=False)[0]
-        rows=tracker(events,state.get('period_transactions',[]),start,when,period)
+            months=month_starts(state);when=st.selectbox('Simulation month',months,format_func=lambda d:d.strftime('%B %Y'),key=key+':month')
+        left,right=window(start,when,period,end=period_end(state));events=result(state,accounting=False)[0]
+        rows=tracker(events,state.get('period_transactions',[]),start,when,period,end=period_end(state))
         choices=sorted({r['category'] for r in rows})
         if choices:
             category=st.selectbox('Simulate category',choices,key=key+':category')

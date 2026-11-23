@@ -1,4 +1,5 @@
 """One-screen allocation editor using the existing atomic recovery preview."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal
@@ -48,9 +49,10 @@ def render_editor(st,state,key,wf):
         st.warning('The spending behind this draft changed. Cancel and review the current decision. Existing commitments can still be reversed.');return
     original=money(state['recovery_sources'].get(source,0));selections=[];valid=True
     prior_accepted=money(state.get('accepted_overspends',{}).get(source,0))
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12);today=date.fromisoformat(state['tracking_date'])
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state);today=date.fromisoformat(state['tracking_date'])
     before_reserve=reserve_balance(state)
     st.caption('Available accumulated contingency: '+dollars(before_reserve['available'])+'. It is offered first, never consumed silently.')
+    if before_reserve.get('unfunded_accrual',0):st.caption(dollars(before_reserve['unfunded_accrual'])+' of accrued target is not backed by dated net resources. It cannot fund this recovery.')
     for index,row in enumerate(list(wf['rows'])):
         row['source']=source
         try:candidate,_,_=recovery_decision_preview(state,source,selections,wf.get('replace_id'),False)
@@ -72,6 +74,8 @@ def render_editor(st,state,key,wf):
                 if cap<=0:st.info('No accrued, uncommitted contingency is available. Choose a future spending source or remove this row and accept the impact.')
                 else:
                     row['amount']=st.number_input('Contingency amount ($)',min_value=.01,max_value=float(cap),value=float(min(money(row.get('amount',cap)),cap)),step=1.0,key=prefix+':reserve:'+str(cap));row['configured']=True
+                    from actions_ui import funding_amounts
+                    funding_amounts(st,reserve_balance(candidate)['available'],money(row['amount']),unresolved,today,end,'Accrued reserve available now')
                     st.caption('Reallocates already-accrued reserve; it is not new savings or a future promise.')
             elif kind in ('Flexible allowance','Scheduled payment'):
                 row['response']='Offset another spending category'
@@ -84,6 +88,8 @@ def render_editor(st,state,key,wf):
     try:
         preview,records,accepted=recovery_decision_preview(state,source,selections,wf.get('replace_id'))
         after=summarize_savings(preview);before=summarize_savings(state)
+        from payment_rescheduling import financial_position
+        cash_before=financial_position(state);cash_after=financial_position(preview)
         allocated=source_used(preview,source)
         signature=acknowledgement_signature([selections,wf.get('replace_id'),str(original),str(accepted)])
         ack=st.checkbox('Accept '+dollars(accepted)+' lower projected savings',value=accepted<=prior_accepted,key=key+':accept:'+signature) if accepted else True
@@ -95,7 +101,11 @@ def render_editor(st,state,key,wf):
                 period=record.get('period_start',record['effective'])
                 st.caption(name+' · '+period+' · '+dollars(record['amount']))
             for label,amount in [('Original overspend',original),('Total allocated',allocated),('Accepted savings reduction',accepted_now),('Remaining unresolved',max(Decimal(0),original-allocated-accepted_now))]:st.write(label+': **'+dollars(amount)+'**')
-            st.write('Latest projected annual savings: **'+dollars(after)+'** · change '+dollars(after-before))
+            st.write('Latest projected budget-period unallocated savings: **'+dollars(after)+'** · change '+dollars(after-before))
+            if cash_before['closing'] is None:st.caption('Cash-position impact unavailable: opening cash has not been provided. No bank balance is assumed.')
+            else:
+                st.write('Projected closing cash: **'+dollars(cash_before['closing'])+' → '+dollars(cash_after['closing'])+'**')
+                st.caption('Lowest projected cash: '+dollars(cash_before['lowest'])+' → '+dollars(cash_after['lowest'])+'. Forecast only; not verified bank balances.')
             balance=reserve_balance(preview)
             st.caption('Accrued reserve available '+dollars(before_reserve['available'])+' → '+dollars(balance['available'])+' · committed '+dollars(balance['committed'])+'. Future recoveries remain pending, not realised savings.')
             for record in records:
@@ -111,4 +121,4 @@ def render_editor(st,state,key,wf):
 
 def summarize_savings(state):
     from planning import result,summarize
-    return summarize(result(state)[0],date.fromisoformat(state['draft']['start']))['savings']
+    return summarize(result(state)[0],date.fromisoformat(state['draft']['start']),end=period_end(state))['savings']

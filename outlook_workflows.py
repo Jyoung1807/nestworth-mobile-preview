@@ -1,4 +1,5 @@
 """Guided forecast changes; all previews and commits use existing replay services."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from copy import deepcopy
 from datetime import date,timedelta
 from decimal import Decimal
@@ -32,7 +33,7 @@ def unexpected(st,state,key):
     step=b['step'];labels=['Expense details','Funding method','Spending reductions','Review & confirm']
     st.progress((step+1)/4,text=f'Step {step+1} of 4 · '+labels[step])
     def f(kind,label,name,default,**kw):return field(st,state,scope,'Outlook',kind,label,name,default,**kw)
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12);today=date.fromisoformat(state.get('tracking_date',str(start)))
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state);today=date.fromisoformat(state.get('tracking_date',str(start)))
     if step==0:
         f('text_input','Unexpected expense / description','description',current.get('description',''))
         f('text_input','Why are you changing the plan?','reason',current.get('reason',''))
@@ -104,7 +105,7 @@ def outlook(st,state,key):
     if notice:st.success(notice)
     st.caption('Financial analysis is on Home. Changes here update its latest forecast without changing locked budgets.')
     if not state['versions']:st.info('Approve your budget in Build Your Budget before making forecast decisions.');return
-    choices=['Change income or regular expenses','Add unexpected expense','Change a planned expense','Manage funding and offsets','Amendment history']
+    choices=['Change income or regular expenses','Add unexpected expense','Change a planned expense','Manage funding and offsets','Change contingency','Amendment history']
     view=st.selectbox('Forecast action',choices,key=key+':action')
     if view=='Change income or regular expenses':
         revision_workflow(st,state,key+':revision')
@@ -112,6 +113,9 @@ def outlook(st,state,key):
             regular_change(st,state,key+':advanced')
     elif view=='Add unexpected expense':unexpected(st,state,key+':decision')
     elif view=='Change a planned expense':revision_workflow(st,state,key+':plan_revision',True)
+    elif view=='Change contingency':
+        from contingency_ui import forecast
+        forecast(st,state,key+':reserve')
     elif view=='Manage funding and offsets':
         st.caption('Amend existing unexpected-expense funding below, or manage overspend commitments in To Do.')
         if st.button('Manage recovery commitments',key=key+':actions'):
@@ -123,7 +127,7 @@ def outlook(st,state,key):
             try:
                 candidate=deepcopy(state);reverse_latest_revision(candidate)
                 start=date.fromisoformat(state['draft']['start'])
-                st.caption('Latest pending amendment can be reversed. Forecast savings after reversal: '+f"${summarize(result(candidate)[0],start)['savings']:,.2f}")
+                st.caption('Latest pending amendment can be reversed. Forecast savings after reversal: '+f"${summarize(result(candidate)[0],start,end=period_end(state))['savings']:,.2f}")
                 ack=st.checkbox('Confirm reversal of the latest pending amendment',key=key+':reverse_ack:'+str(len(state['revisions'])))
                 if st.button('Reverse latest forecast amendment',disabled=not ack,key=key+':reverse_revision'):
                     state.update(candidate);state['outlook_notice']='Amendment reversed; audit history and approved versions are retained.';st.rerun()
@@ -148,7 +152,7 @@ def revision_workflow(st,state,key,plans=False):
     collection=b.get('collection','projects' if plans else 'expenses');target=b.get('target')
     old=next((e for e in state['draft'][collection] if e['id']==target),{})
     if not old:st.warning('Select an entry first.');b['step']=0;return
-    start=date.fromisoformat(state['draft']['start']);today=date.fromisoformat(state.get('tracking_date',str(start)));end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);today=date.fromisoformat(state.get('tracking_date',str(start)));end=period_end(state)
     old=revision_entry(state,collection,target,today)
     if stage==1:
         st.write('Current '+old['name']+' · '+(f"${old['total']:,.2f} planned" if plans else f"${old['amount']:,.2f} {old['frequency'].lower()}"))
@@ -168,7 +172,7 @@ def revision_workflow(st,state,key,plans=False):
         try:
             if not proposal['reason'].strip():raise ValueError('Add a reason before confirming.')
             candidate=deepcopy(state);save_revision(candidate,proposal)
-            before=summarize(result(state)[0],start);after=summarize(result(candidate)[0],start)
+            before=summarize(result(state)[0],start,end=period_end(state));after=summarize(result(candidate)[0],start,end=period_end(state))
             a,c=st.columns(2);a.metric('Annual spending change',f"${after['expenses']-before['expenses']:,.2f}");c.metric('Savings change',f"${after['savings']-before['savings']:,.2f}")
             st.caption(old['name']+' · effective '+str(effective)+'. Approved versions and historical actuals stay unchanged.')
             ack=st.checkbox('Confirm revision; keep the approved baseline unchanged',key=key+':ack:'+str(proposal))

@@ -1,4 +1,5 @@
 """Forecast decisions and money movement, backed by replay rather than deltas."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from mobile_ui import responsive_table
 from copy import deepcopy
 from datetime import date
@@ -47,7 +48,7 @@ def decision_editor(st,state,key):
     selected=st.selectbox('Add or change a decision',['new',*existing],format_func=lambda x:'New unexpected expense' if x=='new' else existing[x]['description'],key=key+':choose')
     current=existing.get(selected,{})
     scope=key+':edit:'+selected+':'+str(len(state['history']))
-    start=date.fromisoformat(state['draft']['start']); end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']); end=period_end(state)
     st.subheader('What has changed?')
     description=st.text_input('Unexpected expense / description',value=current.get('description',''),key=scope+':desc')
     reason=st.text_input('Why are you changing the plan?',value=current.get('reason',''),key=scope+':reason')
@@ -129,7 +130,7 @@ def decision_editor(st,state,key):
 def detailed_forecast(st,state,key,compact=False):
     start=date.fromisoformat(state['draft']['start'])
     st.caption(f'Scenario review date: {start:%d %b %Y}. The next 12 months are expectations, not observed transactions.')
-    events,explanations=result(state); forecast=summarize(events,start)
+    events,explanations=result(state); forecast=summarize(events,start,end=period_end(state))
     baseline=state['versions'][-1] if state['versions'] else None
     original_goal=baseline.get('savings_baseline',baseline['summary']['savings']) if baseline else money(state['draft']['goal'])
     a,b,c,d=st.columns(4)
@@ -153,10 +154,10 @@ def detailed_forecast(st,state,key,compact=False):
                                 {'Measure':'Savings','Approved budget':summary['savings'],'Latest forecast':forecast['savings'],'Change':forecast['savings']-summary['savings']}]),hide_index=True,width='stretch')
     period=st.radio('See your cash flow',['Annual','Monthly','Weekly'],index=1,horizontal=True,key=key+':period')
     grouping='Weekly' if period=='Weekly' else 'Monthly'
-    rows=aggregate(events,start,grouping,state['draft']['opening_cash']); df=frame(rows)
+    rows=aggregate(events,start,grouping,state['draft']['opening_cash'],end=period_end(state)); df=frame(rows)
     from dashboard_charts import savings_chart
     original=approved['events'] if approved else None
-    savings_chart(st,events,original,start,original_goal,budget_label=f"Approved budget v{approved['number']}" if approved else 'Original budget',period=grouping)
+    savings_chart(st,events,original,start,original_goal,budget_label=f"Approved budget v{approved['number']}" if approved else 'Original budget',period=grouping,end=period_end(state))
     st.subheader('Monthly cash flow' if grouping=='Monthly' else 'Weekly cash flow')
     st.caption('Separate from cumulative savings: money arriving and payments due. No genuine actuals are connected.')
     if grouping=='Weekly':
@@ -170,7 +171,7 @@ def detailed_forecast(st,state,key,compact=False):
     st.metric('Forecast contingency remaining',dollars(forecast['contingency']))
     st.caption('Unallocated contingency after forecast funding reductions. No actual contingency spending has been recorded.')
     if approved:
-        bud=aggregate(approved['events'],start,grouping)
+        bud=aggregate(approved['events'],start,grouping,end=period_end(state))
         comparison=pd.merge(frame(bud)[['period','income','expenses']],df[['period','income','expenses']],on='period',suffixes=('_budget','_forecast'),how='outer').fillna(0)
         with st.expander('Budget versus forecast by period'):
             responsive_table(st,comparison,hide_index=True,width='stretch')
@@ -186,7 +187,7 @@ def detailed_forecast(st,state,key,compact=False):
         for payment in upcoming:st.write(str(payment['date'])+' · '+payment['name']+' · **'+dollars(payment['amount'])+'**')
     if compact:
         from dashboard_charts import spending_charts
-        spending_charts(st,events,start,key+':spending',drill=False)
+        spending_charts(st,events,start,key+':spending',drill=False,end=period_end(state))
     else:
         if not state['versions']: return
         st.divider()

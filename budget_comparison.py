@@ -1,4 +1,5 @@
 """Fictional historical baseline, shared-entry edits and explicit finalisation."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from collections import defaultdict
 from copy import deepcopy
 from datetime import date
@@ -29,7 +30,7 @@ def historical_totals(transactions,start):
 
 
 def category_comparison(state,transactions,threshold=15):
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     values=defaultdict(lambda:{'historical':Decimal(0),'baseline':Decimal(0),'proposed':Decimal(0)})
     for row in historical_rows(transactions,start):
         name=UNKNOWN if needs_category(row) else row['category']; id=category_id(name)

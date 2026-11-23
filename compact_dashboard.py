@@ -1,4 +1,5 @@
 """Daily spending views are compact; charts and yearly decisions live in Outlook."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from datetime import date,timedelta
 from decimal import Decimal
 from html import escape
@@ -15,7 +16,7 @@ def dollars(n):return f'${n:,.2f}'
 
 
 def financial_outlook(st,state,key):
-    start=date.fromisoformat(state['draft']['start']);events,_=result(state);summary=summarize(events,start)
+    start=date.fromisoformat(state['draft']['start']);events,_=result(state);summary=summarize(events,start,end=period_end(state))
     approved=state['versions'][-1] if state['versions'] else None
     baseline=approved_savings(state) if approved else money(state['draft']['goal'])
     a,b,c=st.columns(3)
@@ -34,7 +35,9 @@ def financial_outlook(st,state,key):
     from contingency_ledger import reserve_balance
     reserve=reserve_balance(state)
     with st.expander('Contingency reserve'):
-        for label,field in [('Annual target','annual_target'),('Model accrued','accumulated'),('Committed','committed'),('Available now','available')]:st.write(label+' · '+dollars(reserve[field]))
+        for label,field in [('Approved period target','annual_target'),('Model accrued','accumulated'),('Committed','committed'),('Available now','available')]:st.write(label+' · '+dollars(reserve[field]))
+        if 'forecast_target' in reserve:st.write('Forecast period target · '+dollars(reserve['forecast_target']))
+        if reserve.get('unfunded_accrual'):st.caption('Unfunded accrued target · '+dollars(reserve['unfunded_accrual'])+' · unavailable for recovery')
         if reserve['shortfall']:st.warning('Matched income evidence no longer supports '+dollars(reserve['shortfall'])+' of earlier reserve funding. Review or reverse that funding in Actions.')
         st.caption('Fictional scheduled receipts are assumed received on their date unless matched actuals override them. Future contributions are unavailable. Funding history appears in Outlook History.')
     commitments=[a for a in actions if a['type'] in ('commitment','plan_commitment')]
@@ -42,10 +45,10 @@ def financial_outlook(st,state,key):
     totals=recovery_totals(actions);pending=totals['pending'];realised=totals['verified']
     st.write(('Pending recovery **'+dollars(pending)+'** · verified recovery **'+dollars(realised)+'**').replace('$',r'\$'))
     st.caption('Pending reductions are forecast assumptions, not earned Extra Savings. No bank feed or actual savings line is connected.')
-    savings_chart(st,events,approved['events'] if approved else None,start,baseline,budget_label=f"Approved budget v{approved['number']}" if approved else 'Original budget',height=260)
+    savings_chart(st,events,approved['events'] if approved else None,start,baseline,budget_label=f"Approved budget v{approved['number']}" if approved else 'Original budget',height=260,end=period_end(state))
     with st.expander('Cash flow and available cash',expanded=bool(state.pop('outlook_focus',None))):
         grouping=st.radio('Outlook cash-flow period',['Monthly','Weekly'],horizontal=True,key=key+':cashperiod')
-        rows=aggregate(events,start,grouping,state['draft']['opening_cash'])
+        rows=aggregate(events,start,grouping,state['draft']['opening_cash'],end=period_end(state))
         cash_flow_chart(st,rows);cash_flow_chart(st,rows,cumulative=True)
         if any(r['lowest_cash']<0 for r in rows):st.warning('Projected available cash cannot cover a dated payment. Review Cash Flow on Home.')
     with st.expander('Approved history'):
@@ -57,12 +60,12 @@ def render_dashboard(st,state,key):
     view=st.radio('Dashboard view',views,index=views.index(state.get('dashboard_view','Weekly')),horizontal=True,key=key+':view',label_visibility='collapsed')
     state['dashboard_view']=view
     if view=='Financial Outlook':financial_outlook(st,state,key+':outlook');return
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     today=date.fromisoformat(state.get('tracking_date',str(start)));state.setdefault('tracking_date',str(today))
     if view=='Weekly':
         selected=week_selector(st,'Spending week',weeks_in_horizon(start,end),key+':week',week_start(today));when=max(start,selected)
     else:
-        months=[add_months(start,n) for n in range(12)]
+        months=month_starts(state)
         month=st.selectbox('Spending month',months,index=months.index(today.replace(day=1)),format_func=lambda d:d.strftime('%B %Y'),key=key+':month')
         index=months.index(month)
         def move(offset):st.session_state[key+':month']=months[index+offset]
@@ -128,7 +131,7 @@ def render_dashboard(st,state,key):
         st.write('**'+category+' · '+dollars(recorded)+'**')
         st.caption('No allocation in this period.')
         category_details(st,state,key,category,data,actions,view,original)
-    rows=tracker(events,state.get('period_transactions',[]),start,when,view,data['covered'],as_of=today)
+    rows=tracker(events,state.get('period_transactions',[]),start,when,view,data['covered'],as_of=today,end=period_end(state))
     with st.expander('View options'):
         st.checkbox('Compare original approved budget',key=key+':original')
         st.checkbox('Only categories needing attention',key=key+':attention')

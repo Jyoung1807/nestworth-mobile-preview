@@ -1,4 +1,5 @@
 """Touch-friendly fictional weekly accountability and guided dated revisions."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from copy import deepcopy
 from datetime import date,timedelta
 from decimal import Decimal
@@ -18,7 +19,7 @@ def category_icon(name):
 
 
 def tracker_ui(st,state,key):
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     st.subheader('This week & month')
     st.caption('Fictional transactions only · latest revised forecast is the default benchmark. No bank connection or Extra Savings balance.')
     period=st.radio('Tracker period',['Weekly','Monthly'],horizontal=True,key=key+':period')
@@ -40,7 +41,7 @@ def tracker_ui(st,state,key):
     original=st.checkbox('Compare with original approved budget',key=key+':original')
     events=result(state,accounting=False)[0]
     benchmark=state['versions'][0]['events'] if original and state['versions'] else events
-    left,right=window(start,when,period)
+    left,right=window(start,when,period,end=period_end(state))
     covered=any(date.fromisoformat(c['start'])<=max(start,left) and date.fromisoformat(c['end'])>=min(end,right) for c in state.get('coverage',[]))
     with st.expander('Fictional transaction simulator'):
         st.caption('Creates synthetic transactions and explicit period coverage, retaining earlier nonoverlapping simulations. Never use real records here.')
@@ -55,7 +56,7 @@ def tracker_ui(st,state,key):
                 try:simulate_period(state,events,simulation_day,period,category,excess)
                 except ValueError as error:st.error(str(error))
                 else:st.rerun()
-    rows=tracker(benchmark,state.get('period_transactions',[]),start,when,period,covered,as_of=review_date)
+    rows=tracker(benchmark,state.get('period_transactions',[]),start,when,period,covered,as_of=review_date,end=period_end(state))
     attention=st.checkbox('Only categories needing attention',key=key+':attention')
     for row in rows:
         if attention and row['status'] in ('On track','Period completed with underspending','No statement coverage'):continue
@@ -102,7 +103,7 @@ def recovery_editor(st,state,key,source,when,boundary):
             state.setdefault('accepted_overspends',{})[source]=state['recovery_sources'][source]
             st.success('Acknowledged. The forecast includes this excess once.')
         return
-    events=result(state,accounting=False)[0];start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    events=result(state,accounting=False)[0];start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     grouping=st.radio('Recovery period',['Weekly','Monthly'],horizontal=True,key=key+':group')
     future_only=choice=='Offset a future week or month'
     categories=sorted({e['category'] for e in events if e['kind']=='expense'})
@@ -110,7 +111,7 @@ def recovery_editor(st,state,key,source,when,boundary):
     if grouping=='Weekly':
         periods=[w for w in weeks_in_horizon(start,end) if w+timedelta(days=7)>when+timedelta(days=1) and (not future_only or w>when)]
     else:
-        periods=[add_months(start,n) for n in range(12) if add_months(start,n+1)>when+timedelta(days=1) and (not future_only or add_months(start,n)>when)]
+        periods=[d for d in month_starts(state) if add_months(d,1)>when+timedelta(days=1) and (not future_only or d>when)]
     if not periods:st.info('No eligible current or future periods remain in this budget year. Accept the savings reduction instead.');return
     def boundary_for(left):return left+timedelta(days=7) if grouping=='Weekly' else add_months(left,1)
     initial=next((p for p in periods if any(recovery_eligibility(state,events,c,p,boundary_for(p))['amount']>0 for c in categories)),periods[0])
@@ -167,16 +168,16 @@ def revision_editor(st,state,key):
     if collection=='projects' and not percentage:
         percentage=True;st.caption('Planned payment amounts are revised by percentage. Existing dated instalments retain their schedule.')
     value=st.number_input('Change (%)' if percentage else 'New amount per payment ($)',min_value=-100.0 if percentage else 0.0,value=0.0 if percentage else float(old.get('amount',0)),key=key+':value:'+flow+':'+target+':'+str(percentage))
-    start=date.fromisoformat(state['draft']['start']);end=add_months(start,12)
+    start=date.fromisoformat(state['draft']['start']);end=period_end(state)
     effective=st.date_input('Effective from',value=date.fromisoformat(state.get('tracking_date',str(start))),min_value=start,max_value=end-timedelta(days=1),key=key+':effective')
     note=st.text_input('Reason for revision',key=key+':reason')
     revision=dict(scope='category' if category_mode else 'item',target=target,kind=kind,mode='percentage' if percentage else 'amount',value=value,old_amount=old.get('amount',0),effective=str(effective),reason=note,label=targets[target])
     # Project events use the project ID as item_id.
     candidate=deepcopy(state)
     try:
-        before=summarize(result(state)[0],start)
+        before=summarize(result(state)[0],start,end=period_end(state))
         save_revision(candidate,revision)
-        after=summarize(result(candidate)[0],start)
+        after=summarize(result(candidate)[0],start,end=period_end(state))
         change=before['savings']-after['savings']
         st.write(('Annual spending change: **'+dollars(after['expenses']-before['expenses'])+'** · savings impact: **'+dollars(-change)+'**').replace('$',r'\$'))
         st.caption('Earlier dated events, historical transactions and approved versions remain unchanged. No category is silently reduced.')
@@ -188,7 +189,7 @@ def revision_editor(st,state,key):
             source='revision:'+str(len(state.get('revisions',[])))
             candidate.setdefault('recovery_sources',{})[source]=change
             commit_recovery(candidate,source,category,max(effective,date.fromisoformat(state.get('tracking_date',str(start))))+timedelta(days=1),end,amount)
-            st.caption('Savings after proposed offset: '+dollars(summarize(result(candidate)[0],start)['savings']))
+            st.caption('Savings after proposed offset: '+dollars(summarize(result(candidate)[0],start,end=period_end(state))['savings']))
         if st.button('Confirm forecast revision',key=key+':save',disabled=not note.strip()):
             state.update(candidate);st.rerun()
     except ValueError as error:st.warning(str(error))

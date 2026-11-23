@@ -49,3 +49,29 @@ def calendar_events(item,start,end):
         value=remaining if index==len(periods)-1 else min(remaining,money(amount));remaining-=value
         rows.append(dict(id=f"{item['id']}:{index}",item_id=item['id'],project_id=None,name=item['name'],category=item['category'],subcategory=item.get('subcategory',''),kind='expense',date=left,amount=value,paid=False,allowance=True,allocation_method='calendar',allocation_end=right,estimated=item.get('estimated',True)))
     return rows
+
+
+def period_events(item,start,end):
+    """New-budget policy: prorate actual days in the original allowance cycle.
+
+    Each cycle is rounded once and distributed cent-exactly across its covered
+    days. Scheduled bills are deliberately excluded from this adapter.
+    """
+    from finance import add_months
+    from accountability import dated_allocations
+    frequency=item['frequency']
+    if frequency not in FACTORS:raise ValueError('Choose a supported allowance frequency')
+    anchor=date.fromisoformat(str(item.get('first_payment') or start))
+    until=date.fromisoformat(item['end_date'])+timedelta(days=1) if item.get('end_date') else end
+    if until<=anchor:raise ValueError('End date must not precede allowance start')
+    last=min(end,until);rows=[];index=0
+    def boundary(n):
+        return anchor+timedelta(days=n*(7 if frequency=='Weekly' else 14)) if frequency in ('Weekly','Fortnightly') else add_months(anchor,n*{'Monthly':1,'Quarterly':3,'Six-monthly':6,'Annual':12}[frequency])
+    while boundary(index+1)<=start:index+=1
+    while boundary(index)<last:
+        cycle=boundary(index);following=boundary(index+1);left=max(start,cycle);right=min(last,following)
+        if left<right:
+            amount=money(money(item['amount'])*Decimal((right-left).days)/Decimal((following-cycle).days))
+            rows.append(dict(id=f"{item['id']}:cycle:{index}",item_id=item['id'],project_id=None,name=item['name'],category=item['category'],subcategory=item.get('subcategory',''),kind='expense',date=left,amount=amount,paid=False,allowance=True,allocation_method='cycle_days_v1',allocation_end=right,estimated=item.get('estimated',True)))
+        index+=1
+    return dated_allocations(rows)

@@ -40,7 +40,7 @@ def controls(st,base,start):
                     reset_demo(st.session_state,base,demo_key(base),st.session_state.get(base+':populated_reset_confirm',False))
                 st.session_state[base+':populated_reset_confirm']=False
             st.button('Reset Demo Household',disabled=not confirmed,key=base+':reset_populated',on_click=reset_populated)
-            st.caption('Early demo: outgoing spending and current surplus-based reserve. Incoming money and the revised reserve policy are not implemented in this fixture yet.')
+            st.caption('This fictional household uses the current date-aware budget and 10% normal-spending reserve. Try either contingency method in Adjust Forecast. Use fictional transactions only.')
         st.caption('Separate fictional household. Existing households, approved budgets and history stay untouched. Nothing is saved to Supabase.')
         name=st.text_input('Test household name',value='Fresh test household',key=base+':test_name')
         if st.button('Start Fresh Setup',key=base+':create_test'):

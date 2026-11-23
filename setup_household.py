@@ -22,6 +22,25 @@ def household(st,state,key):
     values={};candidate=deepcopy(state['draft'])
     if topic!='Income':st.subheader(topic)
     if topic=='People':
+        from budget_period import BudgetPeriod
+        bounds=BudgetPeriod.from_plan(state)
+        if state['versions']:
+            st.caption('Approved budget period · '+bounds.start.strftime('%d %b %Y')+' – '+bounds.inclusive_end.strftime('%d %b %Y')+' · locked')
+        else:
+            st.markdown('**Your budget period**')
+            period_start=f('date_input','Budget start date','period_start',bounds.start,format='DD/MM/YYYY')
+            duration=f('radio','Budget duration','duration',setup.get('period_preset','12 months'),options=['3 months','6 months','12 months','Custom dates'],horizontal=True)
+            if duration=='Custom dates':
+                period_end=f('date_input','Budget end date (inclusive)','period_end',bounds.inclusive_end,format='DD/MM/YYYY')
+                selected=BudgetPeriod.selected(period_start,period_end) if period_end>=period_start else None
+            else:selected=BudgetPeriod.preset(period_start,int(duration.split()[0]))
+            if selected:
+                st.caption('Through '+selected.inclusive_end.strftime('%d %b %Y')+' · allowances follow their actual cycle days; bills and pay keep their due dates.')
+                candidate.update(start=str(selected.start),end_exclusive=str(selected.end))
+                if not candidate.get('contingency_policy'):
+                    from contingency_policy import default_policy
+                    candidate['contingency_policy']=default_policy()
+            else:st.warning('End date must be on or after the start date.')
         adults=f('number_input','Adults','adults',p['adults'],min_value=1,max_value=10)
         names=[]
         for i in range(adults):
@@ -76,6 +95,11 @@ def household(st,state,key):
         setup['household_section']=TOPICS[index-1];setup['journey_epoch']=setup.get('journey_epoch',0)+1;st.rerun()
     if st.button('Save & Continue',type='primary',key=key+':continue'):
         try:
+            if topic=='People' and not state['versions']:
+                if selected is None:raise ValueError('Choose a valid budget period before continuing.')
+                replace_draft(state,candidate)
+                setup['period_preset']=duration
+                state['tracking_date']=str(max(selected.start,min(date.fromisoformat(state.get('tracking_date',str(selected.start))),selected.inclusive_end)))
             apply_profile(state,values);applied(state,scope)
             if index<2:
                 setup['household_section']=TOPICS[index+1];setup['journey_epoch']=setup.get('journey_epoch',0)+1

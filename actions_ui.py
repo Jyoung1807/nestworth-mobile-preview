@@ -1,4 +1,5 @@
 """Dedicated Actions Centre and a three-step, resumable resolution workflow."""
+from budget_period import BudgetPeriod,period_end,month_starts
 from copy import deepcopy
 from datetime import date,timedelta
 from decimal import Decimal
@@ -20,11 +21,12 @@ def navigate(st,state,page,focus=None):
     st.session_state[state['_nav_key']+':next']=page;st.rerun()
 
 
-def open_source(st,state,source,grouping=None):
+def open_source(st,state,source,grouping=None,review_first=False):
     existing=state.get('action_workflow')
     if not existing or existing['source']!=source:
         action=next((a for a in collect_actions(state) if a.get('source')==source and a['type']=='overspend'),{})
         state['action_workflow']=dict(source=source,label=action.get('category',source.rsplit(':',1)[-1]),step=1,response='Offset another spending category',grouping=grouping or ('Month' if state.get('dashboard_view')=='Monthly' else 'Week'))
+    if review_first:state['action_workflow']['review_stage']=True
     navigate(st,state,'Actions Centre')
 
 
@@ -33,12 +35,15 @@ def render_actions(st,state,key):
     message=state.pop('action_notice',None)
     if message:st.success(message)
     workflow=state.get('action_workflow')
+    if workflow and workflow.get('review_stage'):
+        render_source_review(st,state,key+':review',workflow);return
     if workflow:
         from recovery_editor import render_editor
         render_editor(st,state,key+':flow',workflow)
         return
     st.subheader('To Do')
-    need=sum(a['status']=='Needs decision' for a in actions)
+    from notifications import decision_count
+    need=decision_count(actions)
     waiting=sum(a['type'] in ('commitment','plan_commitment','reserve_commitment') and a['status'] in ('Recovery committed','Awaiting verification') for a in actions)
     st.caption(f'{need} need a decision · {waiting} commitments waiting · pending commitments are not realised savings.')
     choices=['Needs attention','Commitments','Setup reminders','All actions']
@@ -74,6 +79,13 @@ def render_actions(st,state,key):
                         if st.button('Confirm reserve reversal',key=key+':confirm_reverse:'+action['id']):
                             remove_pending(state,action['id']);state.pop('reserve_reversal',None);state['action_notice']='Reserve funding reversed; observed transactions are unchanged.';st.rerun()
                 elif st.button('Review spending',key=key+':verify:'+action['id']):navigate(st,state,'Review Your Spending',dict(kind='transactions',category=r['category']))
+            elif action['id'].startswith('reminder:'):
+                reminder=next(r for r in state.get('reminders',[]) if r['id']==action['id'][len('reminder:'):])
+                new_due=st.date_input('New reminder date',value=max(date.fromisoformat(state['tracking_date']),date.fromisoformat(reminder['due_date'])),min_value=date.fromisoformat(state['tracking_date']),key=key+':due:'+action['id'])
+                if st.button('Reschedule reminder',key=key+':move:'+action['id']):
+                    state.setdefault('reminder_history',[]).append(deepcopy(reminder));reminder['due_date']=str(new_due);st.rerun()
+                if st.button('Mark reminder complete',key=key+':complete:'+action['id']):
+                    state.setdefault('reminder_history',[]).append(deepcopy(reminder));reminder['completed']=True;st.rerun()
             elif st.button(action['next'],key=key+':review:'+action['id'],width='stretch'):
                 navigate(st,state,action['page'],dict(kind=action['id'],project_id=action.get('project_id'),setup_step=action.get('setup_step')))
 
@@ -88,7 +100,7 @@ def render_category_configuration(st,state,wf,key,start,end,today,unresolved,fix
     grouping=st.radio('Recover over',['Month','Week'],index=0 if wf.get('grouping','Week')=='Month' else 1,key=key+':grouping')
     wf['grouping']=grouping
     if grouping=='Month':
-        periods=[add_months(start,n) for n in range(12) if add_months(start,n+1)>today+timedelta(days=1)]
+        periods=[d for d in month_starts(state) if add_months(d,1)>today+timedelta(days=1)]
         left=st.selectbox('Recovery month',periods,index=periods.index(date.fromisoformat(wf['left'])) if wf.get('left') and date.fromisoformat(wf['left']) in periods else min(1,len(periods)-1),format_func=lambda d:d.strftime('%B %Y'),key=key+':month') if periods else None
         right=add_months(left,1) if left else None
     else:
@@ -117,6 +129,9 @@ def render_category_configuration(st,state,wf,key,start,end,today,unresolved,fix
     if not choices:
         st.info('No eligible '+mode_label.lower()+' in this period. Choose another period or spending type. Paid, elapsed and consumed spending is excluded.');return
     category=st.selectbox('Recovery category',choices,index=choices.index(wf['category']) if wf.get('category') in choices else 0,format_func=lambda c:c+' · '+dollars(caps[c])+' eligible',key=key+':category:'+str(left)+':'+mode)
+    current=sum((e['amount'] for e in events if e['kind']=='expense' and e['category']==category and left<=e['date']<right and bool(e.get('allowance'))==(mode=='flexible')),Decimal(0))
+    frequencies=sorted({str(item.get('frequency','Dated payments')) for item in state['draft']['expenses'] if item['category']==category and bool(item.get('allowance'))==(mode=='flexible')})
+    st.caption('Current period allocation '+dollars(current)+' · '+', '.join(frequencies)+' · '+dollars(caps[category])+' eligible to reduce')
     maximum=min(unresolved,caps[category])
     if maximum<=0:st.info('This source is already fully committed. Go Back or Cancel.');return
     amount=st.number_input('Recovery amount ($)',min_value=0.01,max_value=float(maximum),value=float(min(money(wf.get('amount',maximum)),maximum)) or .01,step=1.0,key=key+':amount:'+str(left)+':'+category+':'+mode+':'+str(maximum))
@@ -135,7 +150,7 @@ def render_category_configuration(st,state,wf,key,start,end,today,unresolved,fix
         else:st.caption('Only actual scheduled payments are reduced. Payment dates stay unchanged.')
         for week in preview['weeks']:st.caption(week['label']+' · '+dollars(week['amount'])+(f" · {week['days']} eligible days" if mode=='flexible' else ''))
         wf['custom']=custom;wf['configured']=True;wf['credit']=money(amount)
-        st.write('Accepted savings impact unless another source is added: **'+dollars(unresolved-money(amount))+'**')
+        funding_amounts(st,caps[category],money(amount),unresolved,left,right,mode_label)
     except ValueError as error:st.warning(str(error));wf['configured']=False
 
 
@@ -145,7 +160,7 @@ def render_plan_configuration(st,state,wf,key,start,end,today,unresolved):
     ids={e.get('project_id') for e in events if e.get('project_id') and not e['paid'] and today<e['date']<end and e['amount']>0}
     plans={p['id']:p['name'] for p in state['draft']['projects'] if p['id'] in ids and not plan_category_conflict(state,[e for e in events if e.get('project_id')==p['id'] and not e['paid'] and today<e['date']<end])}
     if not plans:st.info('No eligible future unpaid plans are available. Payments already funding a recovery are excluded. Go Back to choose category recovery or accept the impact.');return
-    project=st.selectbox('Planned expense',list(plans),index=list(plans).index(wf['project']) if wf.get('project') in plans else 0,format_func=plans.get,key=key+':project')
+    project=st.selectbox('Planned expense',list(plans),index=list(plans).index(wf['project']) if wf.get('project') in plans else 0,format_func=lambda identity:plans[identity]+' · '+dollars(sum((e['amount'] for e in events if e.get('project_id')==identity and not e['paid'] and today<e['date']<end),Decimal(0)))+' unpaid',key=key+':project')
     action=st.radio('Change the plan',['Reduce','Postpone','Cancel'],index=['Reduce','Postpone','Cancel'].index(wf.get('plan_action','Reduce')),key=key+':plan_action')
     amount=0;new_date=None
     if action=='Reduce':amount=st.number_input('Plan reduction ($)',min_value=.01,value=float(wf.get('plan_amount',min(20,unresolved))) or .01,key=key+':plan_amount')
@@ -155,8 +170,64 @@ def render_plan_configuration(st,state,wf,key,start,end,today,unresolved):
     wf.update(project=project,plan_action=action,plan_amount=amount,new_date=str(new_date) if new_date else None)
     try:
         _,record,impact=plan_preview(state,wf['source'],project,action,amount,new_date)
-        st.write('Projected annual savings change: **'+dollars(impact)+'**')
+        revised=sum((money(c['amount']) for c in record['changes']),Decimal(0))
+        funding_amounts(st,record['total'],record['total']-revised,unresolved,date.fromisoformat(record['effective']),end,'Future unpaid planned payments',credit=record['amount'])
+        st.write('Projected budget-period savings change: **'+dollars(impact)+'**')
         credit=min(record['amount'],unresolved)
-        st.caption('Recovery credit: '+dollars(credit)+'. Postponing inside the year does not create annual savings.')
+        st.caption('Recovery credit: '+dollars(credit)+'. Moving a payment within the budget period changes timing, not savings.')
         wf['configured']=True;wf['credit']=credit
     except ValueError as error:st.warning(str(error))
+
+
+def render_source_review(st,state,key,workflow):
+    from proactive_alerts import period_for
+    from observations import current
+    from spending_ui import inline_transactions
+    action=next((a for a in collect_actions(state) if a.get('source')==workflow['source'] and a['type']=='overspend'),None)
+    if not action:
+        st.success('This overrun no longer needs a new decision.')
+        if st.button('Return to To Do',key=key+':done'):state.pop('action_workflow',None);st.rerun()
+        return
+    left,right=period_for(state,action)
+    st.subheader('Review '+action['category']+' overspend')
+    if left and right:st.caption(left.strftime('%d %b')+' – '+(right-timedelta(days=1)).strftime('%d %b %Y'))
+    st.warning(dollars(action['remaining'])+' still needs a decision. Its spending impact is already in the forecast.')
+    rows=[t for t in current(state) if t.get('category')==action['category'] and (not left or left<=date.fromisoformat(t['date'])<right)]
+    inline_transactions(st,state,state.get('period_transactions',[]),rows,key+':transactions',False,page_size=6)
+    duplicate_review(st,state,key+':duplicates',rows)
+    if st.button('Choose recovery action',type='primary',key=key+':continue',width='stretch'):
+        workflow['review_stage']=False;st.rerun()
+    if st.button('Return to To Do',key=key+':back'):state.pop('action_workflow',None);st.rerun()
+
+
+def duplicate_review(st,state,key,rows):
+    from observations import set_duplicate
+    candidates=[]
+    for row in rows:
+        for other in state.get('period_transactions',[]):
+            if other['id']!=row['id'] and not other.get('excluded_duplicate') and other['date']==row['date'] and other['amount']==row['amount']:
+                candidates.append((row,other))
+    excluded=[t for t in state.get('period_transactions',[]) if t.get('excluded_duplicate')]
+    if excluded:
+        with st.expander('Excluded duplicates'):
+            for row in excluded:
+                if st.button('Restore '+row['description'],key=key+':restore:'+row['id']):set_duplicate(state,row['id'],False);st.rerun()
+    if not candidates:return
+    with st.expander('Review possible duplicate payments'):
+        labels={str(i):row['description']+' · '+row['date']+' · '+dollars(row['amount'])+' / original '+other['description'] for i,(row,other) in enumerate(candidates)}
+        choice=st.selectbox('Payment to exclude as duplicate',list(labels),format_func=labels.get,key=key+':choice')
+        row,other=candidates[int(choice)]
+        st.caption('Both source records are retained. Only the explicitly excluded duplicate stops contributing to spending.')
+        confirm=st.checkbox('I checked that these are the same payment',key=key+':confirmed:'+choice)
+        if st.button('Confirm duplicate exclusion',disabled=not confirm,key=key+':exclude'):
+            set_duplicate(state,row['id'],True,other['id']);st.rerun()
+
+
+def funding_amounts(st,current,reduction,unresolved,left,right,label,credit=None):
+    """Display the eligible unpaid portion, never imply paid spending can be cut."""
+    from datetime import timedelta
+    st.caption(label+' · '+left.strftime('%d %b %Y')+' – '+(right-timedelta(days=1)).strftime('%d %b %Y'))
+    st.write('Current eligible amount: **'+dollars(current)+'**')
+    st.write('Proposed reduction: **'+dollars(reduction)+'** → Revised eligible amount: **'+dollars(current-reduction)+'**')
+    st.write('Remaining overspend after adjustment: **'+dollars(max(Decimal(0),unresolved-(reduction if credit is None else credit)))+'**')
+    st.caption('Only unpaid, unconsumed and uncommitted spending is eligible. Original frequency and payment dates remain unchanged unless explicitly rescheduled.')

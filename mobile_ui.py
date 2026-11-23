@@ -45,7 +45,7 @@ def mobile_styles(st):
     [data-testid="stMetricLabel"], summary p{overflow-wrap:anywhere;}
     [data-testid="stMain"] [role="radiogroup"]{flex-wrap:wrap;}
     @media(max-width:640px){
-      .stMainBlockContainer{padding:1.5rem 0.65rem 0.8rem;}
+      .stMainBlockContainer{padding:3.75rem 0.65rem 0.8rem;}
       [data-testid="stMain"] h1{font-size:1.3rem!important;line-height:1.3!important;}
       [data-testid="stHorizontalBlock"]{flex-wrap:wrap;gap:0.45rem;}
       [data-testid="stColumn"]{min-width:min(100%,260px)!important;flex:1 1 100%!important;}

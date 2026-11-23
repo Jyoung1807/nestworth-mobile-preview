@@ -14,10 +14,10 @@ def styles(st):
     st.markdown('''<style>
     :root{--nw-forest:#173F39;--nw-sage:#D9E5DC;--nw-ink:#213832;--nw-muted:#677870;--nw-border:#DFE6DF;}
     .stApp{background:#F6F7F3;color:var(--nw-ink);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
-    .stMainBlockContainer{max-width:1200px;padding-top:1.5rem;}
+    .stMainBlockContainer{max-width:1200px;padding-top:3.75rem;}
     h1,h2,h3{color:var(--nw-forest);letter-spacing:-.035em;font-weight:600!important;}
     h1{font-size:2.2rem!important;} h2{font-size:1.65rem!important;} h3{font-size:1.2rem!important;}
-    p,label{line-height:1.5;} [data-testid="stCaptionContainer"]{color:var(--nw-muted);}
+    p,label{line-height:1.5;} [data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] p{color:#56695E!important;}
     [data-testid="stSidebar"]{background:#EAF0E9;border-right:1px solid var(--nw-border);}
     [data-testid="stSidebar"] [role="radiogroup"]{gap:5px;}
     [data-testid="stSidebar"] [data-testid="stRadio"] label{padding:9px 12px;border-radius:10px;}
@@ -37,6 +37,10 @@ def styles(st):
     [data-testid="stExpander"]{border:1px solid var(--nw-border);border-radius:10px;background:#fff;}
     [data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{font-size:16px!important;}
     [data-testid="stAppDeployButton"],[data-testid="stMainMenu"]{display:none;}
+    .nw-demo-banner{font-size:14px;font-weight:650;padding:8px 12px;border-radius:9px;background:#E9DDB8;color:#594820;margin-bottom:12px;}
+    [class*="st-key-financial_alert_warning"]{border-left:5px solid #AA5342!important;background:#FFF6EC;border-radius:12px;padding:16px;}
+    [class*="st-key-financial_alert_critical"]{border-left:5px solid #A03E36!important;background:#FFEEE9;border-radius:12px;padding:16px;}
+    [class*="st-key-financial_alert_info"]{border-left:5px solid #8FAE91!important;background:#EDF3E8;border-radius:12px;padding:16px;}
     .nw-brand{display:flex;align-items:center;gap:11px;margin:0 0 1.6rem;color:#173F39;}
     .nw-mark{width:39px;height:39px;display:grid;place-items:center;border-radius:12px;background:#173F39;color:#E4C996;font-size:24px;}
     .nw-wordmark{font-size:29px;letter-spacing:-1.3px;font-weight:650;line-height:1.1;}
@@ -89,4 +93,4 @@ def empty(st,title,detail):
 
 
 def chart_style(chart):
-    return chart.configure_view(stroke=None).configure_axis(labelFontSize=11,titleFontSize=11,domain=False,gridColor='#E5EBE4',labelColor=MUTED,titleColor=MUTED).configure_legend(labelColor=INK,labelFontSize=11,padding=12)
+    return chart.configure_view(stroke=None).configure_axis(labelFontSize=12,titleFontSize=12,domain=False,gridColor='#E5EBE4',labelColor=MUTED,titleColor=MUTED).configure_legend(labelColor=INK,labelFontSize=12,padding=12)
